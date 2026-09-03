@@ -54,7 +54,7 @@ SITE_USER="$(stat -c '%U' "$CURRENT_TARGET/public")"
 select_backup() {
     local pattern="$1" label="$2"
     local files=()
-    while IFS= read -r f; do files+=("$f"); done < <(ls -t "$BACKUP_DIR"/$pattern 2>/dev/null)
+    while IFS= read -r f; do files+=("$f"); done < <(ls -t "$BACKUP_DIR"/"$pattern" 2>/dev/null)
 
     if [ ${#files[@]} -eq 0 ]; then
         echo "No $label backups found for $SITE_NAME" >&2
@@ -128,7 +128,7 @@ if $RESTORE_DB; then
 
         CREDS_FILE="$(mktemp)"
         chmod 600 "$CREDS_FILE"
-        trap "rm -f \"$CREDS_FILE\"" EXIT
+        trap 'rm -f "$CREDS_FILE"' EXIT
         cat > "$CREDS_FILE" <<EOF
 [client]
 user=$DB_USER

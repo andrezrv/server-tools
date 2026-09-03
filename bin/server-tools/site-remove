@@ -58,12 +58,12 @@ fi
 
 log "Removing Nginx config..."
 rm -f "/etc/nginx/sites-enabled/$DOMAIN" "/etc/nginx/sites-available/$DOMAIN"
-nginx -t && systemctl reload nginx || log "WARNING: nginx reload failed — check config manually"
+{ nginx -t && systemctl reload nginx; } || log "WARNING: nginx reload failed — check config manually"
 
 if [ -n "$SLUG" ] && [ -f "/etc/php/8.5/fpm/pool.d/$SLUG.conf" ]; then
     log "Removing PHP-FPM pool..."
     rm -f "/etc/php/8.5/fpm/pool.d/$SLUG.conf"
-    php-fpm8.5 -t && systemctl reload php8.5-fpm || log "WARNING: php-fpm reload failed — check config manually"
+    { php-fpm8.5 -t && systemctl reload php8.5-fpm; } || log "WARNING: php-fpm reload failed — check config manually"
 fi
 
 if [ -n "$SITE_USER" ]; then

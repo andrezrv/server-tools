@@ -68,7 +68,7 @@ backup_database() {
     local creds_file
     creds_file="$(mktemp)"
     chmod 600 "$creds_file"
-    trap "rm -f \"$creds_file\"" RETURN
+    trap 'rm -f "$creds_file"' RETURN
     cat > "$creds_file" <<EOF
 [client]
 user=$db_user

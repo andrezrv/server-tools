@@ -3,7 +3,7 @@ set -euo pipefail
 
 OUTFILE="/etc/nginx/conf.d/cloudflare-realip.conf"
 TMPFILE="$(mktemp)"
-trap "rm -f \"$TMPFILE\"" EXIT
+trap 'rm -f "$TMPFILE"' EXIT
 
 CF_IPS_V4=$(curl -s https://www.cloudflare.com/ips-v4)
 CF_IPS_V6=$(curl -s https://www.cloudflare.com/ips-v6)

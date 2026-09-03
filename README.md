@@ -4,18 +4,22 @@ Server administration tooling for WordPress sites on Ubuntu 26.04.
 
 ## bin/ — installed at /usr/local/bin/ on the server
 
-`bin/wps` is the single entry point; `bin/server-tools/` holds the individual subcommands (not installed on PATH directly). The GitHub Actions workflow in `.github/workflows/deploy.yml` handles deployment on every push to `main`. To deploy manually:
+`bin/wps` is the single entry point; `bin/server-tools/` holds the individual subcommands (not installed on PATH directly). `bin/server-tools-install` is the install script — it runs as root and handles installing the dispatcher, subcommands, nginx template, and all sudoers files in one shot. The GitHub Actions workflow in `.github/workflows/deploy.yml` copies it to the server and calls it via `sudo` on every deploy. To deploy manually, copy it to the server and run it:
 
+```bash
+scp bin/server-tools-install your-deploy-user@your-server:~/server-tools-install
+ssh your-deploy-user@your-server "sudo ~/server-tools-install ~/path/to/staging"
 ```
-# Dispatcher
-sudo install -m 700 -o root -g root bin/wps /usr/local/bin/wps
 
-# Subcommands
-sudo mkdir -p /usr/local/bin/server-tools
-for f in bin/server-tools/*; do
-  sudo install -m 700 -o root -g root "$f" /usr/local/bin/server-tools/
-done
+**First-time bootstrap only** — before the install script can run via `sudo`, its sudoers rule must exist. Install it once manually on the server (replace `your-deploy-user`):
+
+```bash
+sed "s|DEPLOY_USER|your-deploy-user|g" sudoers/server-tools-install > /tmp/s
+sudo visudo -c -f /tmp/s && sudo install -m 440 -o root -g root /tmp/s /etc/sudoers.d/server-tools-install
+rm /tmp/s
 ```
+
+After that, every deploy re-installs all sudoers files automatically — including this one — so the bootstrap step is a one-time operation.
 
 All tools are invoked as `wps <command> [args]`:
 
@@ -34,16 +38,8 @@ All tools are invoked as `wps <command> [args]`:
 
 ## sudoers/
 
-Both go in `/etc/sudoers.d/`, installed via `visudo -f` (never edit directly), each validated with `visudo -c` after. The deploy workflow handles this automatically; to install manually (replace `your-deploy-user` with the actual OS login username):
+All three files go in `/etc/sudoers.d/`. They are installed automatically by `bin/server-tools-install` on every deploy. Each contains a `DEPLOY_USER` placeholder substituted at install time; each is validated with `visudo -c` before being written.
 
-```bash
-for name in backups deploy; do
-  sed "s|DEPLOY_USER|your-deploy-user|g" sudoers/$name > /tmp/sudoers-$name
-  sudo visudo -c -f /tmp/sudoers-$name
-  sudo install -m 440 -o root -g root /tmp/sudoers-$name /etc/sudoers.d/$name
-  rm /tmp/sudoers-$name
-done
-```
-
-- **backups** — lets the `DEPLOY_USER` login user run `wps` as root without a password, needed since it's invoked over non-interactive SSH (no TTY for a password prompt) by `db-sync`, `wps site:restore`, and `finish-deploy`.
-- **deploy** — same, for `finish-deploy` specifically, invoked by GitHub Actions. Deliberately has no wildcard in it — Ubuntu 26.04's `sudo-rs` doesn't support wildcards in sudoers rules at all.
+- **backups** — lets `DEPLOY_USER` run `wps` as root without a password, needed for non-interactive SSH invocations by `db-sync`, `wps site:restore`, and `finish-deploy`.
+- **deploy** — lets `DEPLOY_USER` run `finish-deploy` (from the site repo) as root without a password, invoked by GitHub Actions.
+- **server-tools-install** — lets `DEPLOY_USER` run the install script from their home directory as root without a password. This is the one rule that must be bootstrapped manually the first time (see above). All subsequent deploys keep it current.

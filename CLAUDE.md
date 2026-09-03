@@ -4,6 +4,7 @@
 
 ```
 bin/wps                    # Single entry point, installed at /usr/local/bin/wps
+bin/server-tools-install   # Install script — runs as root, installs all of the above + nginx template + sudoers
 bin/server-tools/          # Subcommands (not on PATH directly)
   backup                   # Daily cron backup — DB + files, all sites under /var/www/
   site-info                # Print all paths for a site with [OK]/[MISSING]/[DISABLED] status
@@ -19,6 +20,7 @@ nginx/
 sudoers/
   backups                  # Grants DEPLOY_USER passwordless sudo for /usr/local/bin/wps
   deploy                   # Grants DEPLOY_USER passwordless sudo for /home/DEPLOY_USER/finish-deploy
+  server-tools-install     # Grants DEPLOY_USER passwordless sudo for /home/DEPLOY_USER/server-tools-install
 .github/workflows/
   deploy.yml               # Deploys tooling to server on every push
   keep-alive.yml           # Weekly empty commit so scheduled workflows don't auto-disable
@@ -26,29 +28,9 @@ sudoers/
 
 ## Deployment
 
-Every push triggers `.github/workflows/deploy.yml`. To deploy manually:
+The workflow stages files via rsync, copies `bin/server-tools-install` to the deploy user's home directory, then runs `sudo ~/server-tools-install $STAGING_PATH`. That script (running as root) installs the dispatcher, subcommands, nginx template, and all three sudoers files in one shot. It uses `$SUDO_USER` to know which username to substitute into sudoers.
 
-```bash
-# Dispatcher
-sudo install -m 700 -o root -g root bin/wps /usr/local/bin/wps
-
-# Subcommands
-sudo mkdir -p /usr/local/bin/server-tools
-for f in bin/server-tools/*; do
-  sudo install -m 700 -o root -g root "$f" /usr/local/bin/server-tools/
-done
-```
-
-Sudoers files — substitute `DEPLOY_USER`, validate, then install:
-
-```bash
-for name in backups deploy; do
-  sed "s|DEPLOY_USER|$YOUR_DEPLOY_USER|g" sudoers/$name > /tmp/sudoers-$name
-  sudo visudo -c -f /tmp/sudoers-$name
-  sudo install -m 440 -o root -g root /tmp/sudoers-$name /etc/sudoers.d/$name
-  rm /tmp/sudoers-$name
-done
-```
+**Bootstrap** (one-time, before the first workflow run): the `sudoers/server-tools-install` rule must be installed manually so that the workflow can call the script via sudo. See README for the exact command.
 
 ## GitHub Actions secrets
 

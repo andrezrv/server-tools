@@ -5,6 +5,7 @@
 ```
 bin/wps                    # Single entry point, installed at /usr/local/bin/wps
 bin/server-tools-install   # Install script — runs as root, installs all of the above + nginx template + sudoers
+bin/update-cloudflare-ips  # Standalone cron script; installed at /usr/local/bin/, not a wps subcommand
 bin/server-tools/          # Subcommands (not on PATH directly)
   backup                   # Daily cron backup — DB + files, all sites under /var/www/
   site-list                # List all sites under /var/www/ with resolved document root and status

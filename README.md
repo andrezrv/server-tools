@@ -33,6 +33,10 @@ All tools are invoked as `wps <command> [args]`:
 - **wps release:activate** — shared "make this release live" logic (symlink swap, service restarts, cache clear, release-timestamp recording). Used by both `finish-deploy` (in the site's own repo) and `wps release:rollback`.
 - **wps release:rollback** — interactive. Lists releases still on disk for a site and lets you switch back to one without a full backup restore.
 
+## bin/update-cloudflare-ips — standalone cron script
+
+Installed at `/usr/local/bin/update-cloudflare-ips` (not a `wps` subcommand). Fetches the current Cloudflare IP ranges and updates the server firewall accordingly. Meant to be wired up as a cron job rather than called interactively.
+
 ## nginx/
 
 - **wordpress-site.conf.template** — boilerplate for a new site's Nginx config. `SITENAME` is a placeholder to find-and-replace with the real domain. Deliberately excludes all SSL config — certbot adds that automatically. Place at `/etc/nginx/templates/` (not sites-available/sites-enabled, so it's never accidentally loaded as a real site) — `wps site:provision` reads it from exactly that path.

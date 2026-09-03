@@ -22,6 +22,9 @@ for f in "$STAGING_PATH/bin/server-tools/"*; do
     install -m 700 -o root -g root "$f" /usr/local/bin/server-tools/
 done
 
+# Standalone scripts (not wps subcommands)
+install -m 700 -o root -g root "$STAGING_PATH/bin/update-cloudflare-ips" /usr/local/bin/update-cloudflare-ips
+
 # Nginx template
 mkdir -p /etc/nginx/templates
 install -m 644 -o root -g root \

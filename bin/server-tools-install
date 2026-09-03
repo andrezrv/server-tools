@@ -16,12 +16,16 @@ fi
 # Dispatcher
 install -m 700 -o root -g root "$STAGING_PATH/bin/wps" /usr/local/bin/wps
 
-# Subcommands — clear first so removed subcommands don't linger on the server
-mkdir -p /usr/local/bin/server-tools
-rm -f /usr/local/bin/server-tools/*
+# Subcommands — build into a temp dir, then swap atomically so there is
+# never a window where the directory is empty or partially populated.
+NEW_TOOLS_DIR="$(mktemp -d /usr/local/bin/server-tools.XXXXXX)"
+trap 'rm -rf "$NEW_TOOLS_DIR"' EXIT
 for f in "$STAGING_PATH/bin/server-tools/"*; do
-    install -m 700 -o root -g root "$f" /usr/local/bin/server-tools/
+    install -m 700 -o root -g root "$f" "$NEW_TOOLS_DIR/"
 done
+rm -rf /usr/local/bin/server-tools
+mv "$NEW_TOOLS_DIR" /usr/local/bin/server-tools
+trap - EXIT
 
 # Standalone scripts (not wps subcommands)
 install -m 700 -o root -g root "$STAGING_PATH/bin/update-cloudflare-ips" /usr/local/bin/update-cloudflare-ips

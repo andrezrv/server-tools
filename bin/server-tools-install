@@ -16,8 +16,9 @@ fi
 # Dispatcher
 install -m 700 -o root -g root "$STAGING_PATH/bin/wps" /usr/local/bin/wps
 
-# Subcommands
+# Subcommands — clear first so removed subcommands don't linger on the server
 mkdir -p /usr/local/bin/server-tools
+rm -f /usr/local/bin/server-tools/*
 for f in "$STAGING_PATH/bin/server-tools/"*; do
     install -m 700 -o root -g root "$f" /usr/local/bin/server-tools/
 done

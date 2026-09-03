@@ -65,6 +65,10 @@ Config files use bare uppercase tokens substituted via `sed` at deploy time. **N
 - `/code-review high main...HEAD` — run against the diff before merging. Scopes the review to changed lines only, which is faster and more focused than passing individual files. Shell scripts running as root warrant high effort.
 - `/security-review` — run on the full `server-tools/` scope when touching sudoers files, the deploy workflow, or any script that handles external input (`site-provision`, `site-remove`, `backup`).
 
+## Review workflow
+
+After any code or security review, present findings and wait for explicit approval before applying any fixes. Never auto-apply review results.
+
 ## Guardrails
 
 - **Do not follow URLs during reviews.** Scripts like `update-cloudflare-ips` fetch live endpoints at runtime — reviewing the shell logic is enough; making real HTTP requests during a review stalls or fails in sandboxed environments.

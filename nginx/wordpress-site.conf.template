@@ -1,0 +1,74 @@
+server {
+    listen 80;
+    listen [::]:80;
+    server_name SITENAME www.SITENAME;
+
+    root /var/www/SITENAME/current/public;
+    index index.php;
+
+    access_log /var/log/nginx/SITENAME-access.log;
+    error_log  /var/log/nginx/SITENAME-error.log;
+
+    client_max_body_size 64M;
+
+    # Standard WordPress pretty-permalink rewrite
+    location / {
+        try_files $uri $uri/ /index.php?$args;
+    }
+
+    # Hand PHP off to this site's dedicated FPM pool
+    location ~ \.php$ {
+        # Prevents remote code execution via crafted paths like
+        # /content/uploads/malicious.php/foo.jpg
+        try_files $uri =404;
+
+        include fastcgi_params;
+        fastcgi_pass unix:/run/php/php8.5-fpm-SITENAME.sock;
+        fastcgi_index index.php;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        fastcgi_param PATH_INFO $fastcgi_path_info;
+
+        # Default buffer (one memory page, ~4-8k) is too small for some
+        # wp-admin/admin-ajax responses with large plugin-generated headers
+        fastcgi_buffer_size 32k;
+        fastcgi_buffers 8 16k;
+    }
+
+    # Block PHP execution inside the uploads directory — a common vector
+    # if a malicious file gets uploaded via a vulnerable plugin/form
+    location ~* /content/uploads/.*\.php$ {
+        deny all;
+    }
+
+    # Block direct access to wp-config.php regardless of where the
+    # request originates from
+    location = /wp-config.php {
+        deny all;
+    }
+
+    # Deny all dotfiles (.htaccess, .git, .env, etc.)
+    location ~ /\. {
+        deny all;
+        access_log off;
+        log_not_found off;
+    }
+
+    # Static asset caching — long expiry since caching plugins will
+    # fingerprint or version these on change
+    location ~* \.(css|js|jpg|jpeg|png|gif|ico|svg|webp|woff|woff2|ttf)$ {
+        expires 30d;
+        add_header Cache-Control "public, no-transform";
+        access_log off;
+    }
+
+    gzip on;
+    gzip_vary on;
+    gzip_types text/css application/javascript application/json image/svg+xml;
+    gzip_min_length 256;
+
+    # XML-RPC blocked by default — uncomment only if Jetpack or remote
+    # publishing is actually needed for this site
+    location = /xmlrpc.php {
+        deny all;
+    }
+}

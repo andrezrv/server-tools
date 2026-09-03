@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DOMAIN="${1:-}"
+if [ -z "$DOMAIN" ]; then
+    echo "Usage: wps site:info <domain>" >&2
+    exit 1
+fi
+
+SITE_DIR="/var/www/$DOMAIN"
+if [ ! -d "$SITE_DIR" ]; then
+    echo "ERROR: $SITE_DIR does not exist" >&2
+    exit 1
+fi
+
+GREEN="$(tput setaf 2 2>/dev/null || true)"
+RED="$(tput setaf 1 2>/dev/null || true)"
+YELLOW="$(tput setaf 3 2>/dev/null || true)"
+RESET="$(tput sgr0 2>/dev/null || true)"
+
+ok()       { printf "  %-22s %-55s ${GREEN}[OK]${RESET}" "$1" "$2"; }
+missing()  { printf "  %-22s %-55s ${RED}[MISSING]${RESET}" "$1" "$2"; }
+disabled() { printf "  %-22s %-55s ${YELLOW}[DISABLED]${RESET}" "$1" "$2"; }
+
+check() {
+    local label="$1" path="$2"
+    if [ -e "$path" ]; then
+        ok "$label" "$path"
+    else
+        missing "$label" "$path"
+    fi
+    echo ""
+}
+
+# --- Derive site user and slug from current release ---
+SITE_USER=""
+SLUG=""
+CURRENT_TARGET=""
+
+if [ -L "$SITE_DIR/current" ]; then
+    CURRENT_TARGET="$(readlink -f "$SITE_DIR/current" 2>/dev/null || true)"
+    SITE_USER="$(stat -c '%U' "$CURRENT_TARGET/public" 2>/dev/null || true)"
+    SLUG="${SITE_USER%-site}"
+fi
+
+# --- Read DB credentials from .env.production without sourcing ---
+DB_NAME=""
+DB_USER=""
+ENV_FILE="$SITE_DIR/.env.production"
+if [ -f "$ENV_FILE" ]; then
+    DB_NAME="$(grep -E '^DB_NAME=' "$ENV_FILE" | tail -n1 | cut -d '=' -f2-)"
+    DB_USER="$(grep -E '^DB_USER=' "$ENV_FILE" | tail -n1 | cut -d '=' -f2-)"
+fi
+
+# --- Header ---
+echo ""
+echo "Site: $DOMAIN"
+echo "  System user:  ${SITE_USER:-unknown}"
+echo "  Slug:         ${SLUG:-unknown}"
+echo "  DB name:      ${DB_NAME:-unknown}  /  DB user: ${DB_USER:-unknown}"
+echo ""
+
+# --- Paths ---
+check "Site root"         "$SITE_DIR"
+
+# Current symlink — show resolved target if it exists
+if [ -L "$SITE_DIR/current" ] && [ -n "$CURRENT_TARGET" ]; then
+    ok "Current release" "$SITE_DIR/current"
+    echo "  ->  $CURRENT_TARGET"
+    check "Active release"    "$CURRENT_TARGET"
+elif [ -L "$SITE_DIR/current" ]; then
+    missing "Current release" "$SITE_DIR/current (symlink broken)"
+    echo ""
+else
+    missing "Current release" "$SITE_DIR/current"
+    echo ""
+fi
+
+check "Releases dir"      "$SITE_DIR/releases"
+check "Shared dir"        "$SITE_DIR/shared"
+check "Uploads"           "$SITE_DIR/shared/uploads"
+check ".env.production"   "$SITE_DIR/.env.production"
+
+# Nginx — distinguish missing vs disabled (available but not enabled)
+if [ -f "/etc/nginx/sites-available/$DOMAIN" ]; then
+    ok "Nginx config" "/etc/nginx/sites-available/$DOMAIN"
+    echo ""
+    if [ -L "/etc/nginx/sites-enabled/$DOMAIN" ] || [ -f "/etc/nginx/sites-enabled/$DOMAIN" ]; then
+        ok "Nginx enabled" "/etc/nginx/sites-enabled/$DOMAIN"
+    else
+        disabled "Nginx enabled" "/etc/nginx/sites-enabled/$DOMAIN"
+    fi
+    echo ""
+else
+    missing "Nginx config"    "/etc/nginx/sites-available/$DOMAIN"
+    echo ""
+    missing "Nginx enabled"   "/etc/nginx/sites-enabled/$DOMAIN"
+    echo ""
+fi
+
+if [ -n "$SLUG" ]; then
+    check "FPM pool config"   "/etc/php/8.5/fpm/pool.d/$SLUG.conf"
+    check "FPM socket"        "/run/php/php8.5-fpm-$SLUG.sock"
+else
+    missing "FPM pool config" "/etc/php/8.5/fpm/pool.d/<slug>.conf  (slug unknown)"
+    echo ""
+    missing "FPM socket"      "/run/php/php8.5-fpm-<slug>.sock  (slug unknown)"
+    echo ""
+fi
+
+check "wp-cron log dir"   "/var/log/wp-cron/$DOMAIN"
+check "Deploy log"        "/var/log/deploy-$DOMAIN.log"
+check "Backup dir"        "/var/backups/$DOMAIN"
+check "SSL cert"          "/etc/letsencrypt/live/$DOMAIN"
+
+echo ""

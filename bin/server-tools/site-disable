@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DOMAIN="${1:-}"
+if [ -z "$DOMAIN" ]; then
+    echo "Usage: wps site:disable <domain>" >&2
+    exit 1
+fi
+
+if [ ! -f "/etc/nginx/sites-available/$DOMAIN" ]; then
+    echo "ERROR: /etc/nginx/sites-available/$DOMAIN not found" >&2
+    exit 1
+fi
+
+log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1"
+}
+
+SITE_DIR="/var/www/$DOMAIN"
+SITE_USER=""
+if [ -L "$SITE_DIR/current" ]; then
+    SITE_USER="$(stat -c '%U' "$(readlink -f "$SITE_DIR/current")/public" 2>/dev/null || echo "")"
+fi
+
+log "Disabling Nginx site..."
+rm -f "/etc/nginx/sites-enabled/$DOMAIN"
+nginx -t
+systemctl reload nginx
+
+if [ -n "$SITE_USER" ]; then
+    log "Removing this site's wp-cron entry from $SITE_USER's crontab..."
+    mkdir -p "$SITE_DIR/.disabled-backup"
+
+    # Save just this site's own cron line (not the whole crontab, which
+    # may contain other sites' entries if SITE_USER is shared) so
+    # re-enabling later never clobbers anything unrelated added since.
+    crontab -u "$SITE_USER" -l 2>/dev/null | grep "$SITE_DIR/current/public" > "$SITE_DIR/.disabled-backup/cron-line.bak" || true
+
+    # Remove only this site's line, never the whole crontab — SITE_USER
+    # may own other sites sharing the same crontab.
+    REMAINING="$(crontab -u "$SITE_USER" -l 2>/dev/null | grep -v "$SITE_DIR/current/public" || true)"
+    if [ -n "$REMAINING" ]; then
+        echo "$REMAINING" | crontab -u "$SITE_USER" -
+    else
+        crontab -u "$SITE_USER" -r 2>/dev/null || true
+    fi
+fi
+
+log "$DOMAIN is now offline."
+log "Nginx config preserved at /etc/nginx/sites-available/$DOMAIN"
+log "To re-enable: sudo ln -s /etc/nginx/sites-available/$DOMAIN /etc/nginx/sites-enabled/$DOMAIN && sudo nginx -t && sudo systemctl reload nginx"
+if [ -n "$SITE_USER" ]; then
+    log "To restore cron: (sudo crontab -u $SITE_USER -l 2>/dev/null; cat $SITE_DIR/.disabled-backup/cron-line.bak) | sudo crontab -u $SITE_USER -"
+fi

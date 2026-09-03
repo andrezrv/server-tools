@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+OUTFILE="/etc/nginx/conf.d/cloudflare-realip.conf"
+TMPFILE="$(mktemp)"
+trap "rm -f \"$TMPFILE\"" EXIT
+
+CF_IPS_V4=$(curl -s https://www.cloudflare.com/ips-v4)
+CF_IPS_V6=$(curl -s https://www.cloudflare.com/ips-v6)
+
+if [ -z "$CF_IPS_V4" ] || [ -z "$CF_IPS_V6" ]; then
+    echo "$(date): failed to fetch Cloudflare IP ranges — leaving existing config untouched" >&2
+    exit 1
+fi
+
+{
+    echo "# Cloudflare IP ranges — auto-updated $(date -u '+%Y-%m-%d %H:%M UTC')"
+    echo "# Source: https://www.cloudflare.com/ips-v4 and /ips-v6"
+    echo ""
+    echo "# IPv4"
+    for ip in $CF_IPS_V4; do
+        echo "set_real_ip_from $ip;"
+    done
+    echo ""
+    echo "# IPv6"
+    for ip in $CF_IPS_V6; do
+        echo "set_real_ip_from $ip;"
+    done
+    echo ""
+    echo "real_ip_header CF-Connecting-IP;"
+    echo "real_ip_recursive on;"
+} > "$TMPFILE"
+
+# Only touch the real file (and reload nginx) if something actually changed
+if ! diff -q "$TMPFILE" "$OUTFILE" > /dev/null 2>&1; then
+    mv "$TMPFILE" "$OUTFILE"
+    nginx -t && systemctl reload nginx
+    echo "$(date): Cloudflare IP ranges updated and nginx reloaded"
+else
+    rm "$TMPFILE"
+    echo "$(date): no change in Cloudflare IP ranges"
+fi

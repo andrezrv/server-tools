@@ -1,0 +1,256 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SITES_ROOT="/var/www"
+BACKUP_ROOT="/var/backups"
+RETENTION_DAYS=7
+MAX_RETRIES=3
+RETRY_DELAY=10
+
+BACKUP_DB=true
+BACKUP_FILES=true
+TARGET_SITE=""
+
+for arg in "$@"; do
+    case "$arg" in
+        --db-only)
+            BACKUP_FILES=false
+            ;;
+        --files-only)
+            BACKUP_DB=false
+            ;;
+        -*)
+            echo "Unknown flag: $arg" >&2
+            echo "Usage: wps backup [--db-only|--files-only] [site-name]" >&2
+            exit 1
+            ;;
+        *)
+            TARGET_SITE="$arg"
+            ;;
+    esac
+done
+
+log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1"
+}
+
+# Extracts KEY=value from a .env-style file without sourcing it
+get_env_value() {
+    local key="$1" file="$2"
+    grep -E "^${key}=" "$file" | tail -n1 | cut -d '=' -f2- \
+        | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//"
+}
+
+backup_database() {
+    local site_dir="$1" site_name="$2" site_user="$3" backup_dir="$4"
+    local env_file="$site_dir/.env.production"
+
+    if [ ! -f "$env_file" ]; then
+        log "SKIP $site_name db — no .env.production found at site root"
+        return
+    fi
+
+    local db_name db_user db_password db_host
+    db_name="$(get_env_value DB_NAME "$env_file")"
+    db_user="$(get_env_value DB_USER "$env_file")"
+    db_password="$(get_env_value DB_PASSWORD "$env_file")"
+    db_host="$(get_env_value DB_HOST "$env_file")"
+
+    if [ -z "$db_name" ] || [ -z "$db_user" ]; then
+        log "SKIP $site_name db — .env.production missing required DB_* values"
+        return
+    fi
+
+    local timestamp
+    timestamp="$(date +%s)"
+    local backup_file="$backup_dir/${timestamp}-${site_name}.sql.gz"
+
+    local creds_file
+    creds_file="$(mktemp)"
+    chmod 600 "$creds_file"
+    trap "rm -f \"$creds_file\"" RETURN
+    cat > "$creds_file" <<EOF
+[client]
+user=$db_user
+password=$db_password
+host=$db_host
+EOF
+
+    local attempt=1
+    local success=false
+
+    while [ "$attempt" -le "$MAX_RETRIES" ]; do
+        if mariadb-dump --defaults-extra-file="$creds_file" "$db_name" | gzip > "$backup_file"; then
+            success=true
+            break
+        fi
+        log "$site_name db — dump failed (attempt $attempt/$MAX_RETRIES)"
+        rm -f "$backup_file"
+        if [ "$attempt" -lt "$MAX_RETRIES" ]; then
+            log "Retrying $site_name db in ${RETRY_DELAY}s..."
+            sleep "$RETRY_DELAY"
+        fi
+        attempt=$((attempt + 1))
+    done
+
+    if $success; then
+        chown "$site_user":"$site_user" "$backup_file"
+        log "OK $site_name db -> $backup_file"
+    else
+        log "FAILED $site_name db — exhausted $MAX_RETRIES attempts, no partial file left behind"
+    fi
+
+    find "$backup_dir" -maxdepth 1 -name "*-${site_name}.sql.gz" -mtime +"$RETENTION_DAYS" -delete
+}
+
+# Runs a tar with retry + exit-code handling shared by both file backup
+# types below. Args: description, output file, tar's own arguments (from
+# "-C dir item..." onward).
+run_tar_backup() {
+    local description="$1" backup_file="$2"
+    shift 2
+
+    local attempt=1
+    local tar_exit=0
+    local success=false
+
+    while [ "$attempt" -le "$MAX_RETRIES" ]; do
+        tar_exit=0
+        tar -czf "$backup_file" "$@" || tar_exit=$?
+
+        # GNU tar: 0 = clean success, 1 = success but a file changed while
+        # being read (harmless), 2+ = real failure
+        if [ "$tar_exit" -le 1 ]; then
+            success=true
+            break
+        fi
+
+        log "$description — tar exited with code $tar_exit (attempt $attempt/$MAX_RETRIES)"
+        rm -f "$backup_file"
+        if [ "$attempt" -lt "$MAX_RETRIES" ]; then
+            log "Retrying $description in ${RETRY_DELAY}s..."
+            sleep "$RETRY_DELAY"
+        fi
+        attempt=$((attempt + 1))
+    done
+
+    if $success; then
+        if [ "$tar_exit" -eq 1 ]; then
+            log "OK $description -> $backup_file (some files changed during read — harmless)"
+        else
+            log "OK $description -> $backup_file"
+        fi
+        return 0
+    else
+        log "FAILED $description — exhausted $MAX_RETRIES attempts, no partial file left behind"
+        return 1
+    fi
+}
+
+backup_files() {
+    local site_dir="$1" site_name="$2" site_user="$3" backup_dir="$4"
+
+    local current_target
+    current_target="$(readlink -f "$site_dir/current" 2>/dev/null || true)"
+    if [ -z "$current_target" ] || [ ! -d "$current_target" ]; then
+        log "SKIP $site_name files — current symlink missing or broken"
+        return
+    fi
+
+    local timestamp
+    timestamp="$(date +%s)"
+
+    # --- Release content: everything in the currently-live release,
+    # except a stray "backup" dir if one exists, and only wp-config.php
+    # from public/ (WP core itself is regenerable via `wp core download`).
+    # .env.production lives at the site root, outside $current_target
+    # entirely, so it's never a candidate here regardless.
+    local release_args=()
+    local entry base
+    while IFS= read -r entry; do
+        base="$(basename "$entry")"
+        case "$base" in
+            backup) ;;
+            *)
+                release_args+=("$base")
+                ;;
+        esac
+    done < <(find "$current_target" -mindepth 1 -maxdepth 1)
+
+    if [ ${#release_args[@]} -gt 0 ]; then
+        local release_backup="$backup_dir/${timestamp}-${site_name}-release-files.tar.gz"
+        run_tar_backup "$site_name release files" "$release_backup" \
+            --exclude="content/cache" -C "$current_target" "${release_args[@]}"
+        if [ -f "$release_backup" ]; then
+            chown "$site_user":"$site_user" "$release_backup"
+        fi
+    else
+        log "SKIP $site_name release files — nothing to back up after applying exclusions"
+    fi
+
+    # --- shared/: uploads only at this point — genuinely irreplaceable,
+    # so no exclusions at all
+    if [ -d "$site_dir/shared" ]; then
+        local shared_backup="$backup_dir/${timestamp}-${site_name}-shared-files.tar.gz"
+        run_tar_backup "$site_name shared files" "$shared_backup" \
+            -C "$site_dir" shared
+        if [ -f "$shared_backup" ]; then
+            chown "$site_user":"$site_user" "$shared_backup"
+        fi
+    else
+        log "SKIP $site_name shared files — no shared/ directory found"
+    fi
+
+    find "$backup_dir" -maxdepth 1 -name "*-${site_name}-release-files.tar.gz" -mtime +"$RETENTION_DAYS" -delete
+    find "$backup_dir" -maxdepth 1 -name "*-${site_name}-shared-files.tar.gz" -mtime +"$RETENTION_DAYS" -delete
+}
+
+backup_site() {
+    local site_dir="$1"
+    local site_name
+    site_name="$(basename "$site_dir")"
+
+    if [ ! -L "$site_dir/current" ]; then
+        log "SKIP $site_name — no current symlink found (not using the release structure?)"
+        return
+    fi
+
+    local site_user
+    local current_target
+    current_target="$(readlink -f "$site_dir/current" 2>/dev/null || true)"
+    site_user="$(stat -c '%U' "$current_target/public" 2>/dev/null || true)"
+    if [ -z "$site_user" ]; then
+        log "SKIP $site_name — could not determine site user via current/public"
+        return
+    fi
+
+    local backup_dir="$BACKUP_ROOT/$site_name"
+    mkdir -p "$backup_dir"
+    chown "$site_user":"$site_user" "$backup_dir"
+    chmod 750 "$backup_dir"
+
+    log "Processing $site_name (os user: $site_user)"
+
+    if $BACKUP_DB; then
+        backup_database "$site_dir" "$site_name" "$site_user" "$backup_dir"
+    fi
+
+    if $BACKUP_FILES; then
+        backup_files "$site_dir" "$site_name" "$site_user" "$backup_dir"
+    fi
+}
+
+if [ -n "$TARGET_SITE" ]; then
+    if [ -d "$SITES_ROOT/$TARGET_SITE" ]; then
+        backup_site "$SITES_ROOT/$TARGET_SITE"
+    else
+        log "ERROR: $SITES_ROOT/$TARGET_SITE does not exist"
+        exit 1
+    fi
+else
+    for site_dir in "$SITES_ROOT"/*/; do
+        backup_site "${site_dir%/}"
+    done
+fi
+
+log "Backup run complete"

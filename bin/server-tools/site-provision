@@ -1,0 +1,212 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1"
+}
+
+read -r -p "Domain (e.g. newsite.com): " DOMAIN
+if [ -z "$DOMAIN" ]; then
+    echo "ERROR: domain cannot be empty" >&2
+    exit 1
+fi
+if [[ ! "$DOMAIN" =~ ^[a-z0-9.-]+$ ]]; then
+    echo "ERROR: domain must contain only lowercase letters, digits, dots, and hyphens" >&2
+    exit 1
+fi
+
+SITE_DIR="/var/www/$DOMAIN"
+if [ -e "$SITE_DIR" ]; then
+    echo "ERROR: $SITE_DIR already exists — refusing to provision over an existing site" >&2
+    exit 1
+fi
+
+SUGGESTED_SLUG="${DOMAIN%%.*}"
+read -r -p "Site slug for DB/FPM pool naming [$SUGGESTED_SLUG]: " SLUG
+SLUG="${SLUG:-$SUGGESTED_SLUG}"
+if [[ ! "$SLUG" =~ ^[a-z0-9-]+$ ]]; then
+    echo "ERROR: slug must contain only lowercase letters, digits, and hyphens" >&2
+    exit 1
+fi
+
+SUGGESTED_SITE_USER="${SLUG}-site"
+read -r -p "System user to own this site (existing or new) [$SUGGESTED_SITE_USER]: " SITE_USER
+SITE_USER="${SITE_USER:-$SUGGESTED_SITE_USER}"
+if [[ ! "$SITE_USER" =~ ^[a-z0-9_-]+$ ]]; then
+    echo "ERROR: system user must contain only lowercase letters, digits, underscores, and hyphens" >&2
+    exit 1
+fi
+
+# Whoever is actually running this script (via sudo) — not hardcoded —
+# used later both for the deploy log file and for group membership so
+# this account can reach into the site's group-owned locations.
+DEPLOY_LOG_OWNER="${SUDO_USER:-$(whoami)}"
+
+DB_NAME="${SLUG}_wp"
+DB_USER="${SLUG}_wp"
+DB_PASSWORD="$(openssl rand -hex 24)"
+
+if [ -f "/etc/php/8.5/fpm/pool.d/$SLUG.conf" ]; then
+    echo "ERROR: an FPM pool already exists for slug '$SLUG' — pick a different slug to avoid overwriting an unrelated site" >&2
+    exit 1
+fi
+if mariadb -u root -e "USE \`$DB_NAME\`" 2>/dev/null; then
+    echo "ERROR: database '$DB_NAME' already exists — pick a different slug to avoid reusing an unrelated site's database" >&2
+    exit 1
+fi
+
+echo ""
+echo "About to provision:"
+echo "  Domain:     $DOMAIN"
+echo "  Slug:       $SLUG"
+echo "  Site dir:   $SITE_DIR"
+echo "  System user: $SITE_USER"
+echo "  DB name/user: $DB_NAME"
+echo ""
+read -r -p "Proceed? [y/N] " confirm
+if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+    echo "Aborted."
+    exit 1
+fi
+
+# --- 1. Database and scoped DB user ---
+log "Creating database and DB user..."
+mariadb -u root <<SQL
+CREATE DATABASE IF NOT EXISTS \`$DB_NAME\`;
+CREATE USER IF NOT EXISTS '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PASSWORD';
+GRANT ALL PRIVILEGES ON \`$DB_NAME\`.* TO '$DB_USER'@'localhost';
+FLUSH PRIVILEGES;
+SQL
+
+# --- 2. System user ---
+if id "$SITE_USER" &>/dev/null; then
+    log "System user $SITE_USER already exists — reusing it. This site's own DB, FPM pool, and Nginx config are still separate and isolated regardless."
+else
+    log "Creating system user $SITE_USER..."
+    useradd --system --no-create-home --shell /usr/sbin/nologin --user-group "$SITE_USER"
+fi
+
+# --- 3. Directory skeleton + placeholder release ---
+log "Building directory skeleton..."
+mkdir -p "$SITE_DIR/releases" "$SITE_DIR/shared/uploads" "$SITE_DIR/bin"
+TS="$(date +%s)"
+NEW_RELEASE="$SITE_DIR/releases/$TS"
+mkdir -p "$NEW_RELEASE/public"
+cat > "$NEW_RELEASE/public/index.php" <<'PHP'
+<?php
+echo "Placeholder — deploy pending.";
+PHP
+ln -s "$NEW_RELEASE" "$SITE_DIR/current"
+
+# --- 4. .env.production ---
+log "Writing .env.production..."
+cat > "$SITE_DIR/.env.production" <<ENV
+DB_NAME=$DB_NAME
+DB_USER=$DB_USER
+DB_PASSWORD=$DB_PASSWORD
+DB_HOST=localhost
+ENV
+chmod 600 "$SITE_DIR/.env.production"
+
+chown -R "$SITE_USER":"$SITE_USER" "$SITE_DIR"
+
+# Lets the login account (whoever runs deploys/db-sync from outside
+# this site's own isolation) traverse and write into this site's group-
+# owned locations — e.g. creating var/backups/<domain>/incoming/ for
+# db-sync push. Takes effect on that account's next fresh login, not
+# immediately within an already-open session.
+usermod -aG "$SITE_USER" "$DEPLOY_LOG_OWNER"
+
+# db-sync push's target directory — created proactively rather than
+# relying on its own lazy mkdir on first use, so it's already correctly
+# owned and permissioned from the start.
+mkdir -p "/var/backups/$DOMAIN/incoming"
+chown "$SITE_USER":"$SITE_USER" "/var/backups/$DOMAIN/incoming"
+chmod 770 "/var/backups/$DOMAIN/incoming"
+
+# --- 5. Dedicated PHP-FPM pool ---
+log "Creating PHP-FPM pool..."
+cat > "/etc/php/8.5/fpm/pool.d/$SLUG.conf" <<POOL
+[$SLUG]
+user  = $SITE_USER
+group = $SITE_USER
+listen = /run/php/php8.5-fpm-$SLUG.sock
+listen.owner = www-data
+listen.group = www-data
+listen.mode  = 0660
+
+pm = ondemand
+pm.max_children      = 6
+pm.process_idle_timeout = 10s
+pm.max_requests = 500
+pm.status_path = /fpm-status
+ping.path      = /fpm-ping
+request_terminate_timeout = 60s
+security.limit_extensions = .php
+
+php_admin_value[open_basedir] = $SITE_DIR/:/tmp/
+php_admin_value[disable_functions] = exec,passthru,shell_exec,system
+php_admin_value[upload_max_filesize] = 64M
+php_admin_value[post_max_size]       = 64M
+php_admin_value[memory_limit]        = 256M
+
+php_admin_value[error_log] = /var/log/php8.5-fpm-$SLUG-error.log
+php_admin_flag[log_errors]     = on
+php_admin_flag[display_errors] = off
+POOL
+
+php-fpm8.5 -t
+systemctl reload php8.5-fpm
+
+# --- 6. wp-cron log directory (own subdirectory per site, avoiding any
+# cross-site ownership conflict on a shared parent) ---
+log "Setting up wp-cron log directory..."
+mkdir -p "/var/log/wp-cron/$DOMAIN"
+chown "$SITE_USER":"$SITE_USER" "/var/log/wp-cron/$DOMAIN"
+
+# --- 7. Deploy log file — written by `tee` in the GitHub Actions
+# workflow's "Finish deploy" step, which runs as whoever's SSH login
+# account is used for deploys, not as this site's own isolated system
+# user. Must exist and be owned by that account beforehand, since it
+# has no write access to /var/log/ by default.
+log "Setting up deploy log file (owner: $DEPLOY_LOG_OWNER)..."
+touch "/var/log/deploy-$DOMAIN.log"
+chown "$DEPLOY_LOG_OWNER":"$DEPLOY_LOG_OWNER" "/var/log/deploy-$DOMAIN.log"
+
+# --- 8. Cron entry ---
+log "Adding wp-cron crontab entry..."
+(crontab -u "$SITE_USER" -l 2>/dev/null || true; echo "*/5 * * * * flock -n /tmp/wp-cron-$SLUG.lock php -d error_reporting=\"E_ALL & ~E_DEPRECATED\" /usr/local/bin/wp cron event run --due-now --path=$SITE_DIR/current/public --quiet >> /var/log/wp-cron/$DOMAIN/cron.log 2>&1") | crontab -u "$SITE_USER" -
+
+# --- 9. Nginx config from the boilerplate template ---
+log "Creating Nginx config..."
+TEMPLATE="/etc/nginx/templates/wordpress-site.conf.template"
+if [ ! -f "$TEMPLATE" ]; then
+    echo "ERROR: $TEMPLATE not found — cannot generate Nginx config" >&2
+    exit 1
+fi
+# Most-specific pattern first — the plain SITENAME substitution would
+# otherwise also consume the SITENAME inside php8.5-fpm-SITENAME before
+# the second substitution ever got a chance to match it.
+sed "s#php8.5-fpm-SITENAME#php8.5-fpm-$SLUG#g; s/SITENAME/$DOMAIN/g" \
+    "$TEMPLATE" > "/etc/nginx/sites-available/$DOMAIN"
+ln -s "/etc/nginx/sites-available/$DOMAIN" "/etc/nginx/sites-enabled/$DOMAIN"
+nginx -t
+systemctl reload nginx
+
+log "Base site is up at http://$DOMAIN (placeholder page) — DNS must already point here for the next step."
+
+# --- 10. SSL certificate ---
+read -r -p "Run certbot now to obtain an SSL certificate? Requires DNS already pointing at this server. [y/N] " run_certbot
+if [ "$run_certbot" = "y" ] || [ "$run_certbot" = "Y" ]; then
+    certbot --nginx -d "$DOMAIN" -d "www.$DOMAIN"
+else
+    log "Skipping certbot — run manually later: certbot --nginx -d $DOMAIN -d www.$DOMAIN"
+fi
+
+echo ""
+echo "=================================================="
+echo "Provisioning complete for $DOMAIN"
+echo "  DB name/user: $DB_NAME"
+echo "  DB password:  $DB_PASSWORD"
+echo "  (also saved in $SITE_DIR/.env.production)"
+echo "=================================================="

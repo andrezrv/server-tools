@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+TOOLS_DIR="/usr/local/bin/server-tools"
+SUBCOMMAND="${1:-}"
+
+if [ -z "$SUBCOMMAND" ]; then
+    echo "Usage: wps <command> [args...]" >&2
+    echo "" >&2
+    echo "Available commands:" >&2
+    ls "$TOOLS_DIR" | sed -E 's/^(site|release)-/\1:/' | sort | sed 's/^/  /' >&2
+    exit 1
+fi
+
+shift
+
+TOOL="$TOOLS_DIR/${SUBCOMMAND//:/-}"
+if [ ! -f "$TOOL" ]; then
+    echo "wps: unknown command '$SUBCOMMAND'" >&2
+    echo "Run 'wps' with no arguments for available commands." >&2
+    exit 1
+fi
+
+exec "$TOOL" "$@"
+

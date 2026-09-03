@@ -1,0 +1,219 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BACKUP_ROOT="/var/backups"
+SITES_ROOT="/var/www"
+
+RESTORE_DB=true
+RESTORE_FILES=true
+CLEAN_UPLOADS=false
+SITE_NAME=""
+
+for arg in "$@"; do
+    case "$arg" in
+        --db-only) RESTORE_FILES=false ;;
+        --files-only) RESTORE_DB=false ;;
+        --clean) CLEAN_UPLOADS=true ;;
+        -*)
+            echo "Unknown flag: $arg" >&2
+            echo "Usage: wps site:restore <site-name> [--db-only|--files-only] [--clean]" >&2
+            exit 1
+            ;;
+        *) SITE_NAME="$arg" ;;
+    esac
+done
+
+if [ -z "$SITE_NAME" ]; then
+    echo "Usage: wps site:restore <site-name> [--db-only|--files-only] [--clean]" >&2
+    exit 1
+fi
+
+SITE_DIR="$SITES_ROOT/$SITE_NAME"
+BACKUP_DIR="$BACKUP_ROOT/$SITE_NAME"
+
+if [ ! -d "$SITE_DIR" ]; then
+    echo "ERROR: $SITE_DIR does not exist" >&2
+    exit 1
+fi
+if [ ! -d "$BACKUP_DIR" ]; then
+    echo "ERROR: no backups found at $BACKUP_DIR" >&2
+    exit 1
+fi
+
+log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1"
+}
+
+CURRENT_TARGET="$(readlink -f "$SITE_DIR/current" 2>/dev/null || true)"
+if [ -z "$CURRENT_TARGET" ] || [ ! -d "$CURRENT_TARGET/public" ]; then
+    echo "ERROR: $SITE_DIR/current is missing or broken — cannot determine site user" >&2
+    exit 1
+fi
+SITE_USER="$(stat -c '%U' "$CURRENT_TARGET/public")"
+
+select_backup() {
+    local pattern="$1" label="$2"
+    local files=()
+    while IFS= read -r f; do files+=("$f"); done < <(ls -t "$BACKUP_DIR"/$pattern 2>/dev/null)
+
+    if [ ${#files[@]} -eq 0 ]; then
+        echo "No $label backups found for $SITE_NAME" >&2
+        return 1
+    fi
+
+    echo "" >&2
+    echo "Available $label backups for $SITE_NAME:" >&2
+    local i=1
+    for f in "${files[@]}"; do
+        local ts human
+        ts="$(basename "$f" | cut -d '-' -f1)"
+        human="$(date -d "@$ts" '+%Y-%m-%d %H:%M:%S')"
+        echo "  $i) $(basename "$f")  ($human)" >&2
+        i=$((i + 1))
+    done
+
+    read -r -p "Select a backup [1-${#files[@]}], or 0 to skip: " choice
+    if [ "$choice" = "0" ]; then
+        return 1
+    fi
+    if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#files[@]}" ]; then
+        echo "Invalid selection" >&2
+        return 1
+    fi
+    echo "${files[$((choice - 1))]}"
+}
+
+echo "This will restore data for $SITE_NAME."
+$RESTORE_DB && echo "  - the current database"
+$RESTORE_FILES && echo "  - a release restore builds fresh into a NEW release directory, then swaps"
+$RESTORE_FILES && echo "    current to point at it — the live release is never touched in place"
+$RESTORE_FILES && echo "  - shared/ (uploads only): exact restore for everything except"
+$RESTORE_FILES && echo "    uploads, which merges$($CLEAN_UPLOADS && echo ' (--clean: uploads wiped too)')"
+echo ""
+read -r -p "Type the site name ($SITE_NAME) to confirm: " confirm
+if [ "$confirm" != "$SITE_NAME" ]; then
+    echo "Aborted — confirmation did not match."
+    exit 1
+fi
+
+log "Taking a safety snapshot of the current state before restoring..."
+if $RESTORE_DB && $RESTORE_FILES; then
+    wps backup "$SITE_NAME" || log "WARNING: safety snapshot failed — proceeding anyway per your confirmation"
+elif $RESTORE_DB; then
+    wps backup --db-only "$SITE_NAME" || log "WARNING: safety snapshot failed — proceeding anyway per your confirmation"
+else
+    wps backup --files-only "$SITE_NAME" || log "WARNING: safety snapshot failed — proceeding anyway per your confirmation"
+fi
+
+# --- Database restore (in place — there's only one live database
+# regardless of which release is current) ---
+if $RESTORE_DB; then
+    DB_BACKUP="$(select_backup "*.sql.gz" "database" || true)"
+    if [ -z "${DB_BACKUP:-}" ]; then
+        log "Skipping database restore — no backup selected"
+    else
+        log "Restoring database from $(basename "$DB_BACKUP")..."
+        ENV_FILE="$SITE_DIR/.env.production"
+
+        get_env_value() {
+            local key="$1"
+            grep -E "^${key}=" "$ENV_FILE" | tail -n1 | cut -d '=' -f2- \
+                | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//"
+        }
+
+        DB_NAME="$(get_env_value DB_NAME)"
+        DB_USER="$(get_env_value DB_USER)"
+        DB_PASSWORD="$(get_env_value DB_PASSWORD)"
+        DB_HOST="$(get_env_value DB_HOST)"
+
+        CREDS_FILE="$(mktemp)"
+        chmod 600 "$CREDS_FILE"
+        trap "rm -f \"$CREDS_FILE\"" EXIT
+        cat > "$CREDS_FILE" <<EOF
+[client]
+user=$DB_USER
+password=$DB_PASSWORD
+host=$DB_HOST
+EOF
+
+        gunzip -c "$DB_BACKUP" | mariadb --defaults-extra-file="$CREDS_FILE" "$DB_NAME"
+        rm -f "$CREDS_FILE"
+        trap - EXIT
+        log "Database restore complete."
+    fi
+fi
+
+# --- Release restore: always builds fresh, never touches the live
+# release. Extracted content lacks WP core (deliberately excluded from
+# backup) and the public/ symlinks (also excluded, since they're
+# release-specific) — both get rebuilt here the same way the original
+# restructuring did. current only gets swapped after verification. ---
+if $RESTORE_FILES; then
+    RELEASE_BACKUP="$(select_backup "*-release-files.tar.gz" "release" || true)"
+    if [ -z "${RELEASE_BACKUP:-}" ]; then
+        log "Skipping release restore — no backup selected"
+    else
+        NEW_TS="$(date +%s)"
+        NEW_RELEASE="$SITE_DIR/releases/$NEW_TS"
+        log "Building new release at $NEW_RELEASE..."
+        mkdir -p "$NEW_RELEASE"
+
+        log "Extracting $(basename "$RELEASE_BACKUP") (full public/ including WP core, content/, vendor/, bootstrap/, config/, utils/, favicons/)..."
+        tar -xzf "$RELEASE_BACKUP" -C "$NEW_RELEASE"
+
+        log "Rebuilding release-level symlinks (archived ones point at the old release's path, not this one)..."
+        rm -f "$NEW_RELEASE/public/content"
+        ln -s "$NEW_RELEASE/content" "$NEW_RELEASE/public/content"
+        for f in "$NEW_RELEASE"/favicons/*; do
+            [ -e "$f" ] || continue
+            fname="$(basename "$f")"
+            rm -f "$NEW_RELEASE/public/$fname"
+            ln -s "$NEW_RELEASE/favicons/$fname" "$NEW_RELEASE/public/$fname"
+        done
+
+        chown -R "$SITE_USER":"$SITE_USER" "$NEW_RELEASE"
+
+        if [ ! -f "$NEW_RELEASE/public/wp-config.php" ]; then
+            log "ERROR: restored release is missing public/wp-config.php — NOT swapping current."
+            log "The broken release is left at $NEW_RELEASE for inspection; live site is untouched."
+        else
+            ln -sfn "$NEW_RELEASE" "$SITE_DIR/current"
+            log "Swapped current -> $NEW_RELEASE"
+        fi
+    fi
+
+    # --- shared/ restore: in place, since there's only one shared/ —
+    # exact restore for everything except uploads, which merges by
+    # default (plugins/themes-adjacent drop-in files can execute code;
+    # uploads can't, so newer uploads are safe to preserve)
+    SHARED_BACKUP="$(select_backup "*-shared-files.tar.gz" "shared" || true)"
+    if [ -z "${SHARED_BACKUP:-}" ]; then
+        log "Skipping shared/ restore — no backup selected"
+    else
+        log "Contents of $(basename "$SHARED_BACKUP"):"
+        tar -tzf "$SHARED_BACKUP" | awk -F '/' 'NF>1 {print $2}' | sort -u | while read -r item; do
+            echo "  - shared/$item"
+        done
+
+        if $CLEAN_UPLOADS; then
+            log "Removing shared/uploads too (--clean) — no merge, exact restore of everything."
+        fi
+
+        while IFS= read -r item; do
+            [ -z "$item" ] && continue
+            if [ "$item" = "uploads" ] && ! $CLEAN_UPLOADS; then
+                log "  shared/uploads: merging (files not in this backup are kept)"
+                continue
+            fi
+            log "  Wiping current shared/$item before restore..."
+            rm -rf "${SITE_DIR:?}/shared/${item:?}"
+        done < <(tar -tzf "$SHARED_BACKUP" | awk -F '/' 'NF>1 {print $2}' | sort -u)
+
+        log "Restoring shared/ from $(basename "$SHARED_BACKUP")..."
+        tar -xzf "$SHARED_BACKUP" -C "$SITE_DIR"
+        chown -R "$SITE_USER":"$SITE_USER" "$SITE_DIR/shared"
+        log "shared/ restore complete."
+    fi
+fi
+
+log "Restore run complete for $SITE_NAME."

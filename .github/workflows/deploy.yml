@@ -1,0 +1,85 @@
+name: Deploy
+
+on:
+  push:
+  #  branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load SSH key for production server
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      - name: Add production server to known_hosts
+        run: ssh-keyscan -H ${{ secrets.DEPLOY_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Stage files on server
+        run: |
+          STAGING_PATH="/home/${{ secrets.DEPLOY_USER }}/deploy-staging-${{ github.run_id }}"
+          ssh ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "mkdir -p $STAGING_PATH"
+          rsync -az --delete --exclude='.git' ./ \
+            ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:$STAGING_PATH/
+          echo "STAGING_PATH=$STAGING_PATH" >> "$GITHUB_ENV"
+
+      - name: Install bin/wps and bin/server-tools/
+        run: |
+          STAGING_PATH="/home/${{ secrets.DEPLOY_USER }}/deploy-staging-${{ github.run_id }}"
+          
+          ssh ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+            bash << EOF
+          set -euo pipefail
+
+          # Dispatcher
+          sudo install -m 700 -o root -g root \
+            $STAGING_PATH/bin/wps \
+            /usr/local/bin/wps
+
+          # Subcommands
+          sudo mkdir -p /usr/local/bin/server-tools
+          for f in $STAGING_PATH/bin/server-tools/*; do
+            sudo install -m 700 -o root -g root \
+              "\$f" /usr/local/bin/server-tools/
+          done
+          EOF
+
+      - name: Install nginx template
+        run: |
+          STAGING_PATH="/home/${{ secrets.DEPLOY_USER }}/deploy-staging-${{ github.run_id }}"
+          ssh ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+            bash << EOF
+          set -euo pipefail
+          sudo mkdir -p /etc/nginx/templates
+          sudo install -m 644 -o root -g root \
+            $STAGING_PATH/nginx/wordpress-site.conf.template \
+            /etc/nginx/templates/wordpress-site.conf.template
+          EOF
+
+      - name: Install sudoers files
+        run: |
+          STAGING_PATH="/home/${{ secrets.DEPLOY_USER }}/deploy-staging-${{ github.run_id }}"
+          ssh ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+            bash << EOF
+          set -euo pipefail
+          for name in backups deploy; do
+            sed "s|DEPLOY_USER|${{ secrets.DEPLOY_USER }}|g" \
+              $STAGING_PATH/sudoers/\$name > /tmp/sudoers-\$name
+            sudo visudo -c -f /tmp/sudoers-\$name
+            sudo install -m 440 -o root -g root \
+              /tmp/sudoers-\$name \
+              /etc/sudoers.d/\$name
+            rm /tmp/sudoers-\$name
+          done
+          EOF
+
+      - name: Clean up staging directory
+        if: always()
+        run: |
+          ssh ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+            "rm -rf $STAGING_PATH" || true

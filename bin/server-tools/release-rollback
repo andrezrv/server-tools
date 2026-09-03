@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Usage: wps release:rollback <site-name>
+# Lists releases still on disk and lets you pick one to make live again
+# — a fast path for "this deploy is broken, go back" that doesn't need
+# a full backup restore, just re-pointing at a release still present.
+
+SITE_NAME="${1:-}"
+SITES_ROOT="/var/www"
+
+if [ -z "$SITE_NAME" ]; then
+    echo "Usage: wps release:rollback <site-name>" >&2
+    exit 1
+fi
+
+SITE_DIR="$SITES_ROOT/$SITE_NAME"
+RELEASES_DIR="$SITE_DIR/releases"
+
+if [ ! -d "$RELEASES_DIR" ]; then
+    echo "ERROR: $RELEASES_DIR does not exist" >&2
+    exit 1
+fi
+
+CURRENT_TS="$(basename "$(readlink -f "$SITE_DIR/current" 2>/dev/null || echo '')")"
+
+releases=()
+while IFS= read -r r; do releases+=("$r"); done < <(ls -t "$RELEASES_DIR")
+
+if [ ${#releases[@]} -eq 0 ]; then
+    echo "No releases found for $SITE_NAME" >&2
+    exit 1
+fi
+
+echo "Available releases for $SITE_NAME:"
+i=1
+for r in "${releases[@]}"; do
+    human="$(date -d "@$r" '+%Y-%m-%d %H:%M:%S')"
+    marker=""
+    if [ "$r" = "$CURRENT_TS" ]; then
+        marker=" (currently live)"
+    fi
+    echo "  $i) $r  ($human)$marker"
+    i=$((i + 1))
+done
+
+read -r -p "Select a release to activate [1-${#releases[@]}]: " choice
+if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#releases[@]}" ]; then
+    echo "Invalid selection" >&2
+    exit 1
+fi
+
+selected="${releases[$((choice - 1))]}"
+
+if [ "$selected" = "$CURRENT_TS" ]; then
+    echo "That release is already live — nothing to do."
+    exit 0
+fi
+
+echo ""
+echo "This will make release $selected live for $SITE_NAME, replacing the"
+echo "currently active release $CURRENT_TS."
+read -r -p "Type the site name ($SITE_NAME) to confirm: " confirm
+if [ "$confirm" != "$SITE_NAME" ]; then
+    echo "Aborted — confirmation did not match."
+    exit 1
+fi
+
+wps release:activate "$SITE_NAME" "$selected"

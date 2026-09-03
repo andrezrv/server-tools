@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Usage: wps release:activate <site-name> <release-timestamp>
+# Makes an already-built release (sitting in releases/<timestamp>) the
+# live one: swaps the current symlink, restarts/reloads services,
+# records the release timestamp, and clears plugin caches. Used by both
+# finish-deploy (after building a brand new release) and release:rollback
+# (when re-pointing to an existing older one) — kept in one place so the
+# two never drift out of sync on what "going live" actually requires.
+
+SITE_NAME="${1:-}"
+RELEASE_TS="${2:-}"
+SITES_ROOT="/var/www"
+
+if [ -z "$SITE_NAME" ] || [ -z "$RELEASE_TS" ]; then
+    echo "Usage: wps release:activate <site-name> <release-timestamp>" >&2
+    exit 1
+fi
+
+SITE_DIR="$SITES_ROOT/$SITE_NAME"
+RELEASE_DIR="$SITE_DIR/releases/$RELEASE_TS"
+
+if [ ! -d "$RELEASE_DIR" ]; then
+    echo "ERROR: $RELEASE_DIR does not exist" >&2
+    exit 1
+fi
+if [ ! -f "$RELEASE_DIR/public/wp-config.php" ]; then
+    echo "ERROR: $RELEASE_DIR is missing public/wp-config.php — refusing to activate a broken release" >&2
+    exit 1
+fi
+
+log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1"
+}
+
+SITE_USER="$(stat -c '%U' "$RELEASE_DIR/public")"
+
+ln -sfn "$RELEASE_DIR" "$SITE_DIR/current"
+log "Swapped current -> $RELEASE_DIR"
+
+log "Recording release timestamp..."
+sudo -u "$SITE_USER" wp --path="$RELEASE_DIR/public" option update av_latest_release_timestamp "$RELEASE_TS" --autoload=yes --quiet
+
+log "Restarting php8.5-fpm and reloading nginx..."
+systemctl restart php8.5-fpm
+systemctl reload nginx
+
+log "Clearing Cache Enabler and Autoptimize cache..."
+rm -rf "${RELEASE_DIR:?}/content/cache"
+sudo -u "$SITE_USER" wp --path="$RELEASE_DIR/public" cache flush --quiet || true
+
+log "Activated release $RELEASE_TS for $SITE_NAME"

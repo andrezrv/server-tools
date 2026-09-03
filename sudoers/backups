@@ -1,0 +1,5 @@
+# Allows DEPLOY_USER to run wps as root without a password, used by
+# db-sync, wps site:restore, and finish-deploy, all invoked over
+# non-interactive SSH (no TTY available for a password prompt).
+
+DEPLOY_USER ALL=(root) NOPASSWD: /usr/local/bin/wps

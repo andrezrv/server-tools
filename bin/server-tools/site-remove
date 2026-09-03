@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DOMAIN="${1:-}"
+if [ -z "$DOMAIN" ]; then
+    echo "Usage: wps site:remove <domain>" >&2
+    exit 1
+fi
+
+SITE_DIR="/var/www/$DOMAIN"
+if [ ! -d "$SITE_DIR" ]; then
+    echo "ERROR: $SITE_DIR does not exist" >&2
+    exit 1
+fi
+
+log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1"
+}
+
+SITE_USER=""
+if [ -L "$SITE_DIR/current" ]; then
+    SITE_USER="$(stat -c '%U' "$(readlink -f "$SITE_DIR/current")/public" 2>/dev/null || echo "")"
+fi
+SLUG="${SITE_USER%-site}"
+
+DB_NAME=""
+DB_USER=""
+ENV_FILE="$SITE_DIR/.env.production"
+if [ -f "$ENV_FILE" ]; then
+    DB_NAME="$(grep -E '^DB_NAME=' "$ENV_FILE" | tail -n1 | cut -d '=' -f2-)"
+    DB_USER="$(grep -E '^DB_USER=' "$ENV_FILE" | tail -n1 | cut -d '=' -f2-)"
+fi
+
+echo ""
+echo "This will PERMANENTLY remove $DOMAIN, including:"
+echo "  - Nginx config"
+echo "  - PHP-FPM pool (slug: ${SLUG:-unknown})"
+echo "  - Crontab for ${SITE_USER:-unknown}"
+echo "  - SSL certificate"
+echo "  - The entire site directory: $SITE_DIR"
+echo "  - Database: ${DB_NAME:-unknown} and DB user: ${DB_USER:-unknown}"
+echo "  - System user: ${SITE_USER:-unknown} (unless it also owns another site — checked below)"
+echo ""
+echo "This cannot be undone."
+read -r -p "Type the domain ($DOMAIN) to confirm: " confirm
+if [ "$confirm" != "$DOMAIN" ]; then
+    echo "Aborted — confirmation did not match."
+    exit 1
+fi
+
+if command -v wps >/dev/null 2>&1 && [ -L "$SITE_DIR/current" ]; then
+    read -r -p "Take a final backup before removing everything? [Y/n] " final_backup
+    if [ "$final_backup" != "n" ] && [ "$final_backup" != "N" ]; then
+        log "Taking final backup..."
+        wps backup "$DOMAIN" || log "WARNING: final backup failed — continuing anyway per your confirmation"
+    fi
+fi
+
+log "Removing Nginx config..."
+rm -f "/etc/nginx/sites-enabled/$DOMAIN" "/etc/nginx/sites-available/$DOMAIN"
+nginx -t && systemctl reload nginx || log "WARNING: nginx reload failed — check config manually"
+
+if [ -n "$SLUG" ] && [ -f "/etc/php/8.5/fpm/pool.d/$SLUG.conf" ]; then
+    log "Removing PHP-FPM pool..."
+    rm -f "/etc/php/8.5/fpm/pool.d/$SLUG.conf"
+    php-fpm8.5 -t && systemctl reload php8.5-fpm || log "WARNING: php-fpm reload failed — check config manually"
+fi
+
+if [ -n "$SITE_USER" ]; then
+    log "Removing crontab for $SITE_USER..."
+    crontab -u "$SITE_USER" -r 2>/dev/null || true
+fi
+
+log "Removing wp-cron log directory..."
+rm -rf "/var/log/wp-cron/$DOMAIN"
+
+log "Removing SSL certificate (if one exists)..."
+certbot delete --cert-name "$DOMAIN" --non-interactive 2>/dev/null || log "No certificate found, or removal failed — check manually if needed"
+
+log "Removing backups directory for this site..."
+rm -rf "/var/backups/$DOMAIN"
+
+log "Removing site directory $SITE_DIR..."
+rm -rf "${SITE_DIR:?}"
+
+if [ -n "$DB_NAME" ] && [ -n "$DB_USER" ]; then
+    log "Dropping database and DB user..."
+    mariadb -u root <<SQL
+DROP DATABASE IF EXISTS \`$DB_NAME\`;
+DROP USER IF EXISTS '$DB_USER'@'localhost';
+FLUSH PRIVILEGES;
+SQL
+else
+    log "WARNING: could not determine DB name/user — database was NOT dropped. Remove manually if needed."
+fi
+
+if [ -n "$SITE_USER" ]; then
+    log "Checking whether $SITE_USER owns any other site before removing it..."
+    SHARED=false
+    for other_dir in /var/www/*/; do
+        other_domain="$(basename "$other_dir")"
+        [ "$other_domain" = "$DOMAIN" ] && continue
+        if [ -L "${other_dir}current" ]; then
+            other_user="$(stat -c '%U' "$(readlink -f "${other_dir}current")/public" 2>/dev/null || echo "")"
+            if [ "$other_user" = "$SITE_USER" ]; then
+                SHARED=true
+                log "  $SITE_USER also owns $other_domain — will NOT remove this user"
+                break
+            fi
+        fi
+    done
+
+    if $SHARED; then
+        log "Skipping system user removal — $SITE_USER is still in use by another site."
+    else
+        log "Removing system user $SITE_USER..."
+        userdel "$SITE_USER" 2>/dev/null || log "WARNING: could not remove system user — check manually"
+    fi
+fi
+
+log "Removal complete for $DOMAIN."

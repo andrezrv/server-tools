@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+STAGING_PATH="${1:-}"
+if [ -z "$STAGING_PATH" ]; then
+    echo "Usage: server-tools-install <staging-path>" >&2
+    exit 1
+fi
+
+DEPLOY_USER="${SUDO_USER:-}"
+if [ -z "$DEPLOY_USER" ]; then
+    echo "ERROR: must be run via sudo (SUDO_USER is not set)" >&2
+    exit 1
+fi
+
+# Dispatcher
+install -m 700 -o root -g root "$STAGING_PATH/bin/wps" /usr/local/bin/wps
+
+# Subcommands
+mkdir -p /usr/local/bin/server-tools
+for f in "$STAGING_PATH/bin/server-tools/"*; do
+    install -m 700 -o root -g root "$f" /usr/local/bin/server-tools/
+done
+
+# Nginx template
+mkdir -p /etc/nginx/templates
+install -m 644 -o root -g root \
+    "$STAGING_PATH/nginx/wordpress-site.conf.template" \
+    /etc/nginx/templates/wordpress-site.conf.template
+
+# Sudoers files — substitute DEPLOY_USER, validate, install
+trap 'rm -f /tmp/sudoers-backups /tmp/sudoers-deploy /tmp/sudoers-server-tools-install' EXIT
+for name in backups deploy server-tools-install; do
+    sed "s|DEPLOY_USER|$DEPLOY_USER|g" "$STAGING_PATH/sudoers/$name" > "/tmp/sudoers-$name"
+    visudo -c -f "/tmp/sudoers-$name"
+    install -m 440 -o root -g root "/tmp/sudoers-$name" "/etc/sudoers.d/$name"
+done

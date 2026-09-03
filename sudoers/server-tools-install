@@ -1,0 +1,10 @@
+# Lets the deploy user run the server-tools install script from their home
+# directory as root without a password prompt. Required because the workflow
+# runs over non-interactive SSH (no TTY for a password prompt).
+# Installed once manually during bootstrap; the install script re-installs
+# this file on every subsequent deploy, keeping it self-maintaining.
+# Path is under the deploy user's home directory rather than /tmp so it
+# cannot be replaced by another local user (world-writable /tmp risk).
+# (Ubuntu 26.04's sudo-rs does not support wildcards in sudoers rules.)
+
+DEPLOY_USER ALL=(root) NOPASSWD: /home/DEPLOY_USER/server-tools-install

@@ -144,8 +144,9 @@ ping.path      = /fpm-ping
 request_terminate_timeout = 60s
 security.limit_extensions = .php
 
-php_admin_value[open_basedir] = $SITE_DIR/:/tmp/
-php_admin_value[disable_functions] = exec,passthru,shell_exec,system
+php_admin_value[open_basedir] = $SITE_DIR/:/var/tmp/$SLUG/
+php_admin_value[upload_tmp_dir] = /var/tmp/$SLUG
+php_admin_value[disable_functions] = exec,passthru,shell_exec,system,popen,proc_open,pcntl_exec
 php_admin_value[upload_max_filesize] = 64M
 php_admin_value[post_max_size]       = 64M
 php_admin_value[memory_limit]        = 256M
@@ -158,13 +159,21 @@ POOL
 php-fpm8.5 -t
 systemctl reload php8.5-fpm
 
-# --- 6. wp-cron log directory (own subdirectory per site, avoiding any
+# --- 6. Per-site temp directory — used by open_basedir and as the wp-cron
+# lock file location. /var/tmp persists across reboots (unlike /tmp) and
+# the 750 mode keeps it inaccessible to other local users. ---
+log "Setting up per-site temp directory..."
+mkdir -p "/var/tmp/$SLUG"
+chown "$SITE_USER":"$SITE_USER" "/var/tmp/$SLUG"
+chmod 750 "/var/tmp/$SLUG"
+
+# --- 7. wp-cron log directory (own subdirectory per site, avoiding any
 # cross-site ownership conflict on a shared parent) ---
 log "Setting up wp-cron log directory..."
 mkdir -p "/var/log/wp-cron/$DOMAIN"
 chown "$SITE_USER":"$SITE_USER" "/var/log/wp-cron/$DOMAIN"
 
-# --- 7. Deploy log file — written by `tee` in the GitHub Actions
+# --- 8. Deploy log file — written by `tee` in the GitHub Actions
 # workflow's "Finish deploy" step, which runs as whoever's SSH login
 # account is used for deploys, not as this site's own isolated system
 # user. Must exist and be owned by that account beforehand, since it
@@ -173,11 +182,11 @@ log "Setting up deploy log file (owner: $DEPLOY_LOG_OWNER)..."
 touch "/var/log/deploy-$DOMAIN.log"
 chown "$DEPLOY_LOG_OWNER":"$DEPLOY_LOG_OWNER" "/var/log/deploy-$DOMAIN.log"
 
-# --- 8. Cron entry ---
+# --- 9. Cron entry ---
 log "Adding wp-cron crontab entry..."
-(crontab -u "$SITE_USER" -l 2>/dev/null || true; echo "*/5 * * * * flock -n /tmp/wp-cron-$SLUG.lock php -d error_reporting=\"E_ALL & ~E_DEPRECATED\" /usr/local/bin/wp cron event run --due-now --path=$SITE_DIR/current/public --quiet >> /var/log/wp-cron/$DOMAIN/cron.log 2>&1") | crontab -u "$SITE_USER" -
+(crontab -u "$SITE_USER" -l 2>/dev/null || true; echo "*/5 * * * * flock -n /var/tmp/$SLUG/wp-cron.lock php -d error_reporting=\"E_ALL & ~E_DEPRECATED\" /usr/local/bin/wp cron event run --due-now --path=$SITE_DIR/current/public --quiet >> /var/log/wp-cron/$DOMAIN/cron.log 2>&1") | crontab -u "$SITE_USER" -
 
-# --- 9. Nginx config from the boilerplate template ---
+# --- 10. Nginx config from the boilerplate template ---
 log "Creating Nginx config..."
 TEMPLATE="/etc/nginx/templates/wordpress-site.conf.template"
 if [ ! -f "$TEMPLATE" ]; then

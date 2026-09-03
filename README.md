@@ -4,8 +4,7 @@ Server administration tooling for WordPress sites on Ubuntu 26.04.
 
 ## bin/ — installed at /usr/local/bin/ on the server
 
-`bin/wps` is the single entry point; `bin/server-tools/` holds the individual subcommands (not installed on PATH directly). The GitHub
-Actions workflow in `.github/workflows/deploy.yml` handles deployment on every push to `main`. To deploy manually:
+`bin/wps` is the single entry point; `bin/server-tools/` holds the individual subcommands (not installed on PATH directly). The GitHub Actions workflow in `.github/workflows/deploy.yml` handles deployment on every push to `main`. To deploy manually:
 
 ```
 # Dispatcher
@@ -35,9 +34,7 @@ All tools are invoked as `wps <command> [args]`:
 
 ## sudoers/
 
-Both go in `/etc/sudoers.d/`, installed via `visudo -f` (never edit
-directly), each validated with `visudo -c` after. The deploy workflow
-handles this automatically; to install manually (replace `your-deploy-user` with the actual OS login username):
+Both go in `/etc/sudoers.d/`, installed via `visudo -f` (never edit directly), each validated with `visudo -c` after. The deploy workflow handles this automatically; to install manually (replace `your-deploy-user` with the actual OS login username):
 
 ```bash
 for name in backups deploy; do

@@ -7,6 +7,7 @@ bin/wps                    # Single entry point, installed at /usr/local/bin/wps
 bin/server-tools-install   # Install script — runs as root, installs all of the above + nginx template + sudoers
 bin/server-tools/          # Subcommands (not on PATH directly)
   backup                   # Daily cron backup — DB + files, all sites under /var/www/
+  site-list                # List all sites under /var/www/ with resolved document root and status
   site-info                # Print all paths for a site with [OK]/[MISSING]/[DISABLED] status
   site-provision           # Create a new site end-to-end
   site-restore             # Full restore from backup archive

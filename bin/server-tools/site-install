@@ -59,14 +59,25 @@ log "Extracting..."
 unzip -q "$ZIP" -d "$TMP_DIR"
 STAGING="$TMP_DIR/wp-boilerplate-main"
 
-log "Installing dependencies..."
-composer --working-dir="$STAGING" update --no-interaction --no-dev
-
-# Temporary secrets.php so wp-config.php can load during wp core install.
-# finish-deploy will prune config/ and generate its own copy afterward.
+# Generate secrets.php before handing staging over to the site user so
+# wp-config.php can load during wp core install. post-install sees it already
+# exists and skips its own generation. finish-deploy replaces it afterward.
 log "Generating temporary secrets.php..."
 { printf '<?php\n'; curl -s https://api.wordpress.org/secret-key/1.1/salt/; } \
     > "$STAGING/config/secrets.php"
+
+log "Handing staging directory to $SITE_USER..."
+chown -R "$SITE_USER":"$SITE_USER" "$STAGING"
+
+log "Installing dependencies..."
+sudo -u "$SITE_USER" composer --working-dir="$STAGING" update --no-interaction --no-dev
+
+# post-install moves WP core from .wp-core-tmp/ to public/. If it didn't run
+# (e.g. composer failed silently), download core directly as a fallback.
+if [ ! -f "$STAGING/public/wp-load.php" ]; then
+    log "WordPress core not found in public/ after composer — downloading directly..."
+    sudo -u "$SITE_USER" wp core download --path="$STAGING/public" --force
+fi
 
 # Temporary .env.production in staging so utils/functions.php find_file resolves
 # immediately (it searches from APPLICATION_PATH up; provisioned file is 2 levels

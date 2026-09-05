@@ -67,7 +67,7 @@ log "Generating temporary secrets.php..."
     > "$STAGING/config/secrets.php"
 
 log "Handing staging directory to $SITE_USER..."
-chown -R "$SITE_USER":"$SITE_USER" "$STAGING"
+chown -R "$SITE_USER":"$SITE_USER" "$TMP_DIR"
 
 log "Installing dependencies..."
 sudo -u "$SITE_USER" composer --working-dir="$STAGING" update --no-interaction --no-dev

@@ -25,8 +25,8 @@ if [ ! -d "$RELEASE_DIR" ]; then
     echo "ERROR: $RELEASE_DIR does not exist" >&2
     exit 1
 fi
-if [ ! -f "$RELEASE_DIR/public/wp-config.php" ]; then
-    echo "ERROR: $RELEASE_DIR is missing public/wp-config.php — refusing to activate a broken release" >&2
+if [ ! -f "$RELEASE_DIR/wp-config.php" ]; then
+    echo "ERROR: $RELEASE_DIR is missing wp-config.php — refusing to activate a broken release" >&2
     exit 1
 fi
 

@@ -66,6 +66,12 @@ log "Generating temporary secrets.php..."
 { printf '<?php\n'; curl -s https://api.wordpress.org/secret-key/1.1/salt/; } \
     > "$STAGING/config/secrets.php"
 
+# Temporary .env.production so utils/functions.php can resolve DB credentials
+# during wp core install. Placed before chown so the bulk ownership change covers
+# it and the site user can read it. Removed after install so the real file at
+# $SITE_DIR/.env.production is found via parent-directory traversal at runtime.
+cp "$SITE_DIR/.env.production" "$STAGING/.env.production"
+
 log "Handing staging directory to $SITE_USER..."
 chown -R "$SITE_USER":"$SITE_USER" "$TMP_DIR"
 
@@ -78,11 +84,6 @@ if [ ! -f "$STAGING/public/wp-load.php" ]; then
     log "WordPress core not found in public/ after composer — downloading directly..."
     sudo -u "$SITE_USER" wp core download --path="$STAGING/public" --force
 fi
-
-# Temporary .env.production in staging so utils/functions.php find_file resolves
-# immediately (it searches from APPLICATION_PATH up; provisioned file is 2 levels
-# above a release dir, but staging isn't a release yet).
-cp "$SITE_DIR/.env.production" "$STAGING/.env.production"
 
 echo ""
 echo "WordPress install for $DOMAIN"

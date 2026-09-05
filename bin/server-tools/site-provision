@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+cd /
 
 log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - $1"

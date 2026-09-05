@@ -25,6 +25,15 @@ log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - $1"
 }
 
+SITE_USER=""
+if [ -L "$SITE_DIR/current" ]; then
+    SITE_USER="$(stat -c '%U' "$(readlink -f "$SITE_DIR/current")/public" 2>/dev/null || true)"
+fi
+if [ -z "$SITE_USER" ]; then
+    echo "ERROR: could not determine site user from $SITE_DIR/current — is the site provisioned?" >&2
+    exit 1
+fi
+
 ZIP_URL="https://github.com/andrezrv/wp-boilerplate/archive/refs/heads/main.zip"
 
 TMP_DIR="$(mktemp -d /var/www/.staging-XXXXXX)"
@@ -38,8 +47,11 @@ log "Extracting..."
 unzip -q "$ZIP" -d "$TMP_DIR"
 STAGING="$TMP_DIR/wp-boilerplate-main"
 
+log "Handing staging directory to $SITE_USER..."
+chown -R "$SITE_USER":"$SITE_USER" "$TMP_DIR"
+
 log "Installing dependencies..."
-composer --working-dir="$STAGING" update --no-interaction --no-dev
+sudo -u "$SITE_USER" composer --working-dir="$STAGING" update --no-interaction --no-dev
 
 log "Running finish-deploy..."
 "$STAGING/bin/finish-deploy" "$DOMAIN" "$STAGING" production

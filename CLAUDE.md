@@ -10,6 +10,8 @@ bin/server-tools/          # Subcommands (not on PATH directly)
   backup                   # Daily cron backup — DB + files, all sites under /var/www/
   site-list                # List all sites under /var/www/ with resolved document root and status
   site-info                # Print all paths for a site with [OK]/[MISSING]/[DISABLED] status
+  site-install             # Install WP Boilerplate on a provisioned site; marks as unmanaged, sets daily update cron
+  site-update              # Pull and deploy latest boilerplate; only runs on sites with the unmanaged marker
   site-provision           # Create a new site end-to-end
   site-restore             # Full restore from backup archive
   site-disable             # Take a site offline (reversible)

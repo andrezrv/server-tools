@@ -44,7 +44,7 @@ DEPLOY_LOG_OWNER="${SUDO_USER:-$(whoami)}"
 
 DB_NAME="${SLUG}_wp"
 DB_USER="${SLUG}_wp"
-DB_PASSWORD="$(openssl rand -hex 24)"
+DB_PASSWORD="$(openssl rand -hex 5)"
 
 if [ -f "/etc/php/8.5/fpm/pool.d/$SLUG.conf" ]; then
     echo "ERROR: an FPM pool already exists for slug '$SLUG' — pick a different slug to avoid overwriting an unrelated site" >&2
@@ -207,9 +207,14 @@ log "Base site is up at http://$DOMAIN (placeholder page) — DNS must already p
 # --- 10. SSL certificate ---
 read -r -p "Run certbot now to obtain an SSL certificate? Requires DNS already pointing at this server. [y/N] " run_certbot
 if [ "$run_certbot" = "y" ] || [ "$run_certbot" = "Y" ]; then
-    certbot --nginx -d "$DOMAIN" -d "www.$DOMAIN"
+    read -r -p "Also include www.$DOMAIN in the certificate? [y/N] " include_www
+    if [ "$include_www" = "y" ] || [ "$include_www" = "Y" ]; then
+        certbot --nginx -d "$DOMAIN" -d "www.$DOMAIN"
+    else
+        certbot --nginx -d "$DOMAIN"
+    fi
 else
-    log "Skipping certbot — run manually later: certbot --nginx -d $DOMAIN -d www.$DOMAIN"
+    log "Skipping certbot — run manually later: certbot --nginx -d $DOMAIN [-d www.$DOMAIN]"
 fi
 
 echo ""

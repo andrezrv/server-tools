@@ -93,7 +93,7 @@ rm -rf "${SITE_DIR:?}"
 
 if [ -n "$DB_NAME" ] && [ -n "$DB_USER" ]; then
     log "Dropping database and DB user..."
-    mariadb -u root <<SQL
+    mariadb -u root <<SQL || log "WARNING: database drop failed — remove $DB_NAME and $DB_USER manually"
 DROP DATABASE IF EXISTS \`$DB_NAME\`;
 DROP USER IF EXISTS '$DB_USER'@'localhost';
 FLUSH PRIVILEGES;
@@ -123,6 +123,7 @@ if [ -n "$SITE_USER" ]; then
     else
         log "Removing system user $SITE_USER..."
         userdel "$SITE_USER" 2>/dev/null || log "WARNING: could not remove system user — check manually"
+        groupdel "$SITE_USER" 2>/dev/null || log "WARNING: could not remove group $SITE_USER — check manually"
     fi
 fi
 

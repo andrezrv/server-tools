@@ -54,6 +54,10 @@ log "Installing dependencies..."
 sudo -u "$SITE_USER" composer --working-dir="$STAGING" update --no-interaction --no-dev
 
 log "Running finish-deploy..."
-"$STAGING/bin/finish-deploy" "$DOMAIN" "$STAGING" production
+"$STAGING/bin/finish-deploy" "$DOMAIN" "$STAGING" production || {
+    log "ERROR: update failed — attempting rollback to previous release..."
+    wps release:rollback "$DOMAIN" || log "WARNING: rollback also failed — manual intervention required"
+    exit 1
+}
 
 log "Update complete for $DOMAIN"

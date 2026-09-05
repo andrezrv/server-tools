@@ -119,20 +119,16 @@ sudo -u "$SITE_USER" wp --path="$STAGING/public" --url="$SITE_URL" core install 
     --admin_email="$ADMIN_EMAIL" \
     --skip-email
 
-# If no bundled WordPress themes are installed, the boilerplate theme (via Composer)
-# won't activate automatically — prompt for which theme to use.
-if ! sudo -u "$SITE_USER" wp --path="$STAGING/public" theme list --field=name 2>/dev/null | grep -qE '^twenty'; then
-    INSTALLED_THEMES="$(sudo -u "$SITE_USER" wp --path="$STAGING/public" theme list --field=name 2>/dev/null || true)"
-    if [ -n "$INSTALLED_THEMES" ]; then
-        echo ""
-        echo "Installed themes:"
-        printf '%s\n' "$INSTALLED_THEMES"
-        echo ""
-        read -r -p "Theme to activate (leave blank to skip): " THEME_SLUG
-        if [ -n "$THEME_SLUG" ]; then
-            sudo -u "$SITE_USER" wp --path="$STAGING/public" theme activate "$THEME_SLUG"
-            log "Activated theme: $THEME_SLUG"
-        fi
+INSTALLED_THEMES="$(sudo -u "$SITE_USER" wp --path="$STAGING/public" theme list --field=name 2>/dev/null || true)"
+if [ -n "$INSTALLED_THEMES" ]; then
+    echo ""
+    echo "Installed themes:"
+    printf '%s\n' "$INSTALLED_THEMES"
+    echo ""
+    read -r -p "Theme to activate (leave blank to skip): " THEME_SLUG
+    if [ -n "$THEME_SLUG" ]; then
+        sudo -u "$SITE_USER" wp --path="$STAGING/public" theme activate "$THEME_SLUG"
+        log "Activated theme: $THEME_SLUG"
     fi
 fi
 

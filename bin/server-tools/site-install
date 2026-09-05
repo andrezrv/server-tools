@@ -119,6 +119,23 @@ sudo -u "$SITE_USER" wp --path="$STAGING/public" --url="$SITE_URL" core install 
     --admin_email="$ADMIN_EMAIL" \
     --skip-email
 
+# If no bundled WordPress themes are installed, the boilerplate theme (via Composer)
+# won't activate automatically — prompt for which theme to use.
+if ! sudo -u "$SITE_USER" wp --path="$STAGING/public" theme list --field=name 2>/dev/null | grep -qE '^twenty'; then
+    INSTALLED_THEMES="$(sudo -u "$SITE_USER" wp --path="$STAGING/public" theme list --field=name 2>/dev/null || true)"
+    if [ -n "$INSTALLED_THEMES" ]; then
+        echo ""
+        echo "Installed themes:"
+        printf '%s\n' "$INSTALLED_THEMES"
+        echo ""
+        read -r -p "Theme to activate (leave blank to skip): " THEME_SLUG
+        if [ -n "$THEME_SLUG" ]; then
+            sudo -u "$SITE_USER" wp --path="$STAGING/public" theme activate "$THEME_SLUG"
+            log "Activated theme: $THEME_SLUG"
+        fi
+    fi
+fi
+
 # Remove the temp env file before finish-deploy moves staging to a release dir.
 # The real .env.production at $SITE_DIR/ is found via parent-dir traversal at runtime.
 rm -f "$STAGING/.env.production"
@@ -128,6 +145,7 @@ log "Running finish-deploy..."
 
 log "Marking site as unmanaged..."
 touch "$SITE_DIR/unmanaged"
+chown "$SITE_USER":"$SITE_USER" "$SITE_DIR/unmanaged"
 
 log "Setting up daily auto-update cron..."
 printf '0 3 * * * root /usr/local/bin/wps site:update %s >> /var/log/deploy-%s.log 2>&1\n' \

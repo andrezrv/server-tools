@@ -37,6 +37,7 @@ log() {
 SITE_USER="$(stat -c '%U' "$RELEASE_DIR/public")"
 
 ln -sfn "$RELEASE_DIR" "$SITE_DIR/current"
+chown -h "$SITE_USER":"$SITE_USER" "$SITE_DIR/current"
 log "Swapped current -> $RELEASE_DIR"
 
 log "Recording release timestamp..."

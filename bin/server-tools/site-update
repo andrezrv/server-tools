@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DOMAIN="${1:-}"
+if [ -z "$DOMAIN" ]; then
+    echo "Usage: wps site:update <domain>" >&2
+    exit 1
+fi
+
+SITE_DIR="/var/www/$DOMAIN"
+if [ ! -d "$SITE_DIR" ]; then
+    echo "ERROR: $SITE_DIR does not exist" >&2
+    exit 1
+fi
+if [ ! -f "$SITE_DIR/unmanaged" ]; then
+    echo "$DOMAIN is not an unmanaged site — skipping." >&2
+    exit 0
+fi
+if ! command -v composer >/dev/null 2>&1; then
+    echo "ERROR: composer not found on PATH" >&2
+    exit 1
+fi
+
+log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1"
+}
+
+ZIP_URL="https://github.com/andrezrv/wp-boilerplate/archive/refs/heads/main.zip"
+
+TMP_DIR="$(mktemp -d /var/www/.staging-XXXXXX)"
+trap 'rm -rf "$TMP_DIR"' EXIT
+ZIP="$TMP_DIR/main.zip"
+
+log "Downloading WP Boilerplate..."
+curl -fL -o "$ZIP" "$ZIP_URL"
+
+log "Extracting..."
+unzip -q "$ZIP" -d "$TMP_DIR"
+STAGING="$TMP_DIR/wp-boilerplate-main"
+
+log "Installing dependencies..."
+composer --working-dir="$STAGING" update --no-interaction --no-dev
+
+log "Running finish-deploy..."
+"$STAGING/bin/finish-deploy" "$DOMAIN" "$STAGING" production
+
+log "Update complete for $DOMAIN"

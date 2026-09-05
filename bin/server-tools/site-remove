@@ -36,6 +36,9 @@ echo "This will PERMANENTLY remove $DOMAIN, including:"
 echo "  - Nginx config"
 echo "  - PHP-FPM pool (slug: ${SLUG:-unknown})"
 echo "  - Crontab for ${SITE_USER:-unknown}"
+if [ -n "$SLUG" ] && [ -f "/etc/cron.d/wps-update-$SLUG" ]; then
+    echo "  - Daily update cron: /etc/cron.d/wps-update-$SLUG"
+fi
 echo "  - SSL certificate"
 echo "  - The entire site directory: $SITE_DIR"
 echo "  - Database: ${DB_NAME:-unknown} and DB user: ${DB_USER:-unknown}"
@@ -69,6 +72,11 @@ fi
 if [ -n "$SITE_USER" ]; then
     log "Removing crontab for $SITE_USER..."
     crontab -u "$SITE_USER" -r 2>/dev/null || true
+fi
+
+if [ -n "$SLUG" ] && [ -f "/etc/cron.d/wps-update-$SLUG" ]; then
+    log "Removing unmanaged-site update cron..."
+    rm -f "/etc/cron.d/wps-update-$SLUG"
 fi
 
 log "Removing wp-cron log directory..."

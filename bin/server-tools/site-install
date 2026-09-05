@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DOMAIN="${1:-}"
+if [ -z "$DOMAIN" ]; then
+    echo "Usage: wps site:install <domain>" >&2
+    exit 1
+fi
+
+SITE_DIR="/var/www/$DOMAIN"
+if [ ! -d "$SITE_DIR" ]; then
+    echo "ERROR: $SITE_DIR does not exist — run wps site:provision first" >&2
+    exit 1
+fi
+if [ -f "$SITE_DIR/unmanaged" ]; then
+    echo "ERROR: $DOMAIN is already installed as an unmanaged site" >&2
+    exit 1
+fi
+if ! command -v composer >/dev/null 2>&1; then
+    echo "ERROR: composer not found on PATH" >&2
+    exit 1
+fi
+if ! command -v wp >/dev/null 2>&1; then
+    echo "ERROR: wp-cli not found on PATH" >&2
+    exit 1
+fi
+
+log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1"
+}
+
+SITE_USER=""
+if [ -L "$SITE_DIR/current" ]; then
+    SITE_USER="$(stat -c '%U' "$(readlink -f "$SITE_DIR/current")/public" 2>/dev/null || true)"
+fi
+SLUG="${SITE_USER%-site}"
+if [ -z "$SITE_USER" ]; then
+    echo "ERROR: could not determine site user from $SITE_DIR/current — is the site provisioned?" >&2
+    exit 1
+fi
+
+if [ -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]; then
+    SITE_URL="https://$DOMAIN"
+else
+    SITE_URL="http://$DOMAIN"
+fi
+
+ZIP_URL="https://github.com/andrezrv/wp-boilerplate/archive/refs/heads/main.zip"
+
+# Staging under /var/www so it's on the same filesystem — finish-deploy uses mv
+TMP_DIR="$(mktemp -d /var/www/.staging-XXXXXX)"
+trap 'rm -rf "$TMP_DIR"' EXIT
+ZIP="$TMP_DIR/main.zip"
+
+log "Downloading WP Boilerplate..."
+curl -fL -o "$ZIP" "$ZIP_URL"
+
+log "Extracting..."
+unzip -q "$ZIP" -d "$TMP_DIR"
+STAGING="$TMP_DIR/wp-boilerplate-main"
+
+log "Installing dependencies..."
+composer --working-dir="$STAGING" update --no-interaction --no-dev
+
+# Temporary secrets.php so wp-config.php can load during wp core install.
+# finish-deploy will prune config/ and generate its own copy afterward.
+log "Generating temporary secrets.php..."
+{ printf '<?php\n'; curl -s https://api.wordpress.org/secret-key/1.1/salt/; } \
+    > "$STAGING/config/secrets.php"
+
+# Temporary .env.production in staging so utils/functions.php find_file resolves
+# immediately (it searches from APPLICATION_PATH up; provisioned file is 2 levels
+# above a release dir, but staging isn't a release yet).
+cp "$SITE_DIR/.env.production" "$STAGING/.env.production"
+
+echo ""
+echo "WordPress install for $DOMAIN"
+echo ""
+read -r -p "Admin username: " ADMIN_USER
+if [ -z "$ADMIN_USER" ]; then
+    echo "ERROR: admin username cannot be empty" >&2
+    exit 1
+fi
+read -r -s -p "Admin password: " ADMIN_PASS
+echo ""
+if [ -z "$ADMIN_PASS" ]; then
+    echo "ERROR: admin password cannot be empty" >&2
+    exit 1
+fi
+read -r -s -p "Confirm password: " ADMIN_PASS_CONFIRM
+echo ""
+if [ "$ADMIN_PASS" != "$ADMIN_PASS_CONFIRM" ]; then
+    echo "ERROR: passwords do not match" >&2
+    exit 1
+fi
+read -r -p "Admin email: " ADMIN_EMAIL
+if [ -z "$ADMIN_EMAIL" ]; then
+    echo "ERROR: admin email cannot be empty" >&2
+    exit 1
+fi
+
+log "Running wp core install..."
+wp --path="$STAGING/public" --url="$SITE_URL" core install \
+    --title="$DOMAIN" \
+    --admin_user="$ADMIN_USER" \
+    --admin_password="$ADMIN_PASS" \
+    --admin_email="$ADMIN_EMAIL" \
+    --skip-email
+
+# Remove the temp env file before finish-deploy moves staging to a release dir.
+# The real .env.production at $SITE_DIR/ is found via parent-dir traversal at runtime.
+rm -f "$STAGING/.env.production"
+
+log "Running finish-deploy..."
+"$STAGING/bin/finish-deploy" "$DOMAIN" "$STAGING" production
+
+log "Marking site as unmanaged..."
+touch "$SITE_DIR/unmanaged"
+
+log "Setting up daily auto-update cron..."
+printf '0 3 * * * root /usr/local/bin/wps site:update %s >> /var/log/deploy-%s.log 2>&1\n' \
+    "$DOMAIN" "$DOMAIN" > "/etc/cron.d/wps-update-$SLUG"
+chmod 644 "/etc/cron.d/wps-update-$SLUG"
+
+log "Install complete for $DOMAIN ($SITE_URL)"
+log "Auto-update scheduled daily at 03:00 via /etc/cron.d/wps-update-$SLUG"

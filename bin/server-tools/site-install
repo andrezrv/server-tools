@@ -100,7 +100,7 @@ if [ -z "$ADMIN_EMAIL" ]; then
 fi
 
 log "Running wp core install..."
-wp --path="$STAGING/public" --url="$SITE_URL" core install \
+sudo -u "$SITE_USER" wp --path="$STAGING/public" --url="$SITE_URL" core install \
     --title="$DOMAIN" \
     --admin_user="$ADMIN_USER" \
     --admin_password="$ADMIN_PASS" \

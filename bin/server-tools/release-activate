@@ -47,8 +47,10 @@ log "Restarting php8.5-fpm and reloading nginx..."
 systemctl restart php8.5-fpm
 systemctl reload nginx
 
-log "Clearing Cache Enabler and Autoptimize cache..."
-rm -rf "${RELEASE_DIR:?}/content/cache"
+if [ -e "$RELEASE_DIR/content/plugins/cache-enabler" ] || [ -e "$RELEASE_DIR/content/plugins/autoptimize" ]; then
+    log "Clearing Cache Enabler / Autoptimize cache..."
+    rm -rf "${RELEASE_DIR:?}/content/cache"
+fi
 sudo -u "$SITE_USER" wp --path="$RELEASE_DIR/public" cache flush --quiet || true
 
 log "Activated release $RELEASE_TS for $SITE_NAME"

@@ -11,14 +11,13 @@ bin/server-tools/          # Subcommands (not on PATH directly)
   site-list                # List all sites under /var/www/ with resolved document root and status
   site-info                # Print all paths for a site with [OK]/[MISSING]/[DISABLED] status
   site-install             # Install WP Boilerplate on a provisioned site; marks as unmanaged, sets daily update cron
-  site-update              # Pull and deploy latest boilerplate; only runs on sites with the unmanaged marker
+  site-update              # Pull and deploy latest boilerplate; only runs on sites with the unmanaged marker; auto-rolls back on finish-deploy failure
   site-provision           # Create a new site end-to-end
   site-restore             # Full restore from backup archive
   site-disable             # Take a site offline (reversible)
   site-remove              # Permanently delete everything site-provision created
-  release-activate         # Shared symlink-swap + restart logic
+  release-activate         # Shared symlink-swap + restart logic; clears plugin cache only when Cache Enabler or Autoptimize is installed
   release-rollback         # Interactive rollback to a previous on-disk release
-  update-cloudflare-ips    # Update server firewall with current Cloudflare IP ranges
 nginx/
   wordpress-site.conf.template   # Uses SITENAME placeholder; place at /etc/nginx/templates/
 sudoers/
@@ -59,6 +58,7 @@ Config files use bare uppercase tokens substituted via `sed` at deploy time. **N
 - Quote every variable expansion — no bare `$VAR` in shell.
 - `sudo install -m <mode> -o root -g root <src> <dst>` over `cp` + `chmod`.
 - Here-docs for multi-line SSH commands. Escape subcommand variables (`\$f`) to defer expansion to the remote shell.
+- Run WP-CLI and composer as the site user (`sudo -u "$SITE_USER"`), not root — root-owned files in the web root cause post-install failures.
 
 ## Recommended skills
 

@@ -49,6 +49,8 @@ parse_opts() {
             _key="${_key^^}"
             _val="${_a#*=}"
             printf -v "_OPT_${_key}" '%s' "$_val"
+        elif [[ "$_a" == --yes ]]; then
+            printf -v "_OPT_YES" '%s' "y"
         fi
     done
 }

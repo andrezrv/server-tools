@@ -21,19 +21,27 @@ rm /tmp/s
 
 After that, every deploy re-installs all sudoers files automatically — including this one — so the bootstrap step is a one-time operation.
 
-All tools are invoked as `wps <command> [args]`:
+All tools are invoked as `wps <command> [args]`. Every subcommand accepts a `--json` flag that emits a single JSON object to stdout instead of human-readable output — useful for scripting, monitoring, and CI:
 
-- **wps list** — lists every site under `/var/www/` with its resolved document root and a `[OK]`/`[BROKEN]`/`[NO CURRENT]` status.
-- **wps backup** — daily cron backup (DB + files) across every site under /var/www with a valid `current` symlink. Auto-discovers sites, no per-site configuration needed. Supports `--db-only`/`--files-only` and an optional site-name argument for one-off runs.
-- **wps site:info** — prints every path the provision process creates for a site, with `[OK]`, `[MISSING]`, or `[DISABLED]` status for each. Also shows the active release, system user, slug, and DB credentials read from `.env.production`.
+```bash
+wps site:list --json | jq '.sites[] | select(.status != "ok")'
+wps site:info example.com --json | jq '.paths.ssl_cert.status'
+wps backup --json > /tmp/backup-result.json
+```
+
+Interactive commands (those that prompt for input) continue to show prompts on the terminal even in JSON mode — the JSON result is written to stdout at the end, so `wps site:provision --json > result.json` still works interactively while sending structured output to the file.
+
+- **wps site:list** — lists every site under `/var/www/` with its resolved document root and a `[OK]`/`[BROKEN]`/`[NO CURRENT]` status. JSON: `{"sites":[{"domain":"...","doc_root":"...","status":"ok|broken|no_current"}]}`.
+- **wps backup** — daily cron backup (DB + files) across every site under /var/www with a valid `current` symlink. Auto-discovers sites, no per-site configuration needed. Supports `--db-only`/`--files-only` and an optional site-name argument for one-off runs. JSON: `{"sites":[{"domain":"...","db":{"status":"ok|skipped|failed","file":"..."},"release_files":{...},"shared_files":{...}}],"events":[...]}`.
+- **wps site:info** — prints every path the provision process creates for a site, with `[OK]`, `[MISSING]`, or `[DISABLED]` status for each. Also shows the active release, system user, slug, and DB credentials read from `.env.production`. JSON: `{"domain":"...","site_user":"...","slug":"...","db_name":"...","db_user":"...","paths":{"site_root":{"path":"...","status":"ok|missing"},...}}`.
 - **wps site:install** — installs WordPress on a provisioned site using the WP Boilerplate. Downloads the latest `main` branch, runs `composer update --no-dev`, deploys through the same `finish-deploy` + `release:activate` pipeline as managed sites, runs the initial WordPress database setup interactively, and schedules a daily `wps site:update` cron. Creates an `unmanaged` marker at the site root to distinguish from GitHub-deployed sites.
-- **wps site:update** — pulls and deploys the latest WP Boilerplate code on an unmanaged site. Only runs on sites with the `unmanaged` marker; exits silently on managed sites. Automatically rolls back to the previous release if `finish-deploy` fails at any stage, including after the symlink has been swapped. Called daily by the cron set up by `wps site:install`.
-- **wps site:restore** — full restore from a backup archive. Builds into a new release directory and only swaps `current` after verifying it, never touches the live release in place.
-- **wps site:provision** — creates a brand-new site end to end (DB, system user, directory skeleton, FPM pool, cron, Nginx config, optionally SSL), stopping right before an actual deploy. Interactive prompts for domain and system-user slug.
-- **wps site:disable** — takes a site offline (removes it from sites-enabled, clears its crontab) without deleting anything. Fully reversible — prints the exact commands to undo it.
+- **wps site:update** — pulls and deploys the latest WP Boilerplate code on an unmanaged site. Only runs on sites with the `unmanaged` marker; exits silently on managed sites. Automatically rolls back to the previous release if `finish-deploy` fails at any stage, including after the symlink has been swapped. Called daily by the cron set up by `wps site:install`. JSON: `{"domain":"...","status":"ok|error","rollback_status":"ok|failed","events":[...]}`.
+- **wps site:restore** — full restore from a backup archive. Builds into a new release directory and only swaps `current` after verifying it, never touches the live release in place. Supports `--db-only`/`--files-only`/`--clean`.
+- **wps site:provision** — creates a brand-new site end to end (DB, system user, directory skeleton, FPM pool, cron, Nginx config, optionally SSL), stopping right before an actual deploy. Interactive prompts for domain and system-user slug. JSON output includes the generated `db_password`.
+- **wps site:disable** — takes a site offline (removes it from sites-enabled, clears its crontab) without deleting anything. Fully reversible — prints the exact commands to undo it. JSON: `{"domain":"...","status":"disabled","reenable_cmd":"...","restore_cron_cmd":"...","events":[...]}`.
 - **wps site:remove** — permanently deletes everything `wps site:provision` created for a site: Nginx config, FPM pool, cron, SSL cert, database, files, system user. Requires typing the domain to confirm. Won't remove a system user if it's still shared by another site.
-- **wps release:activate** — shared "make this release live" logic (symlink swap, service restarts, cache clear, release-timestamp recording). Used by both `finish-deploy` (in the site's own repo) and `wps release:rollback`.
-- **wps release:rollback** — interactive. Lists releases still on disk for a site and lets you switch back to one without a full backup restore.
+- **wps release:activate** — shared "make this release live" logic (symlink swap, service restarts, cache clear, release-timestamp recording). Used by both `finish-deploy` (in the site's own repo) and `wps release:rollback`. JSON: `{"site":"...","release":"...","status":"activated","events":[...]}`.
+- **wps release:rollback** — interactive. Lists releases still on disk for a site and lets you switch back to one without a full backup restore. JSON: `{"site":"...","previous_release":"...","activated_release":"...","status":"rolled_back|already_live"}`.
 
 ## bin/update-cloudflare-ips — standalone cron script
 

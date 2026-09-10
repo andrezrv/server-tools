@@ -36,3 +36,26 @@ json_events_array() {
     done
     printf ']'
 }
+
+# Parse --key=value args and store as _OPT_KEY variables.
+# Call once near the top of each subcommand: parse_opts "$@"
+parse_opts() {
+    local _a _key _val
+    for _a in "$@"; do
+        if [[ "$_a" == --*=* ]]; then
+            _key="${_a%%=*}"
+            _key="${_key#--}"
+            _key="${_key//-/_}"
+            _key="${_key^^}"
+            _val="${_a#*=}"
+            printf -v "_OPT_${_key}" '%s' "$_val"
+        fi
+    done
+}
+
+# Return the value supplied via --key=value, or empty string.
+get_opt() {
+    local _varname
+    _varname="_OPT_$(printf '%s' "${1//-/_}" | tr '[:lower:]' '[:upper:]')"
+    printf '%s' "${!_varname:-}"
+}

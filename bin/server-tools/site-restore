@@ -18,6 +18,7 @@ for arg in "$@"; do
         --files-only) RESTORE_DB=false ;;
         --clean)      CLEAN_UPLOADS=true ;;
         --json)       JSON_MODE=true ;;
+        --*=*)        ;;
         -*)
             echo "Unknown flag: $arg" >&2
             echo "Usage: wps site:restore <site-name> [--db-only|--files-only] [--clean] [--json]" >&2
@@ -26,6 +27,7 @@ for arg in "$@"; do
         *) SITE_NAME="$arg" ;;
     esac
 done
+parse_opts "$@"
 
 if [ -z "$SITE_NAME" ]; then
     echo "Usage: wps site:restore <site-name> [--db-only|--files-only] [--clean] [--json]" >&2
@@ -90,10 +92,12 @@ $RESTORE_FILES && echo "    current to point at it — the live release is never
 $RESTORE_FILES && echo "  - shared/ (uploads only): exact restore for everything except"
 $RESTORE_FILES && echo "    uploads, which merges$($CLEAN_UPLOADS && echo ' (--clean: uploads wiped too)')"
 echo ""
-read -r -p "Type the site name ($SITE_NAME) to confirm: " confirm
-if [ "$confirm" != "$SITE_NAME" ]; then
-    echo "Aborted — confirmation did not match."
-    exit 1
+if [ -z "$(get_opt yes)" ]; then
+    read -r -p "Type the site name ($SITE_NAME) to confirm: " confirm
+    if [ "$confirm" != "$SITE_NAME" ]; then
+        echo "Aborted — confirmation did not match."
+        exit 1
+    fi
 fi
 
 log "Taking a safety snapshot of the current state before restoring..."
@@ -116,7 +120,12 @@ _SHARED_FILE=""
 
 # --- Database restore ---
 if $RESTORE_DB; then
-    DB_BACKUP="$(select_backup "*.sql.gz" "database" || true)"
+    _db_opt="$(get_opt db_backup)"
+    if [ -n "$_db_opt" ]; then
+        DB_BACKUP="$BACKUP_DIR/$_db_opt"
+    else
+        DB_BACKUP="$(select_backup "*.sql.gz" "database" || true)"
+    fi
     if [ -z "${DB_BACKUP:-}" ]; then
         log "Skipping database restore — no backup selected"
     else
@@ -155,7 +164,12 @@ fi
 
 # --- Release restore ---
 if $RESTORE_FILES; then
-    RELEASE_BACKUP="$(select_backup "*-release-files.tar.gz" "release" || true)"
+    _rel_opt="$(get_opt release_backup)"
+    if [ -n "$_rel_opt" ]; then
+        RELEASE_BACKUP="$BACKUP_DIR/$_rel_opt"
+    else
+        RELEASE_BACKUP="$(select_backup "*-release-files.tar.gz" "release" || true)"
+    fi
     if [ -z "${RELEASE_BACKUP:-}" ]; then
         log "Skipping release restore — no backup selected"
     else
@@ -193,7 +207,12 @@ if $RESTORE_FILES; then
     fi
 
     # --- shared/ restore ---
-    SHARED_BACKUP="$(select_backup "*-shared-files.tar.gz" "shared" || true)"
+    _sh_opt="$(get_opt shared_backup)"
+    if [ -n "$_sh_opt" ]; then
+        SHARED_BACKUP="$BACKUP_DIR/$_sh_opt"
+    else
+        SHARED_BACKUP="$(select_backup "*-shared-files.tar.gz" "shared" || true)"
+    fi
     if [ -z "${SHARED_BACKUP:-}" ]; then
         log "Skipping shared/ restore — no backup selected"
     else

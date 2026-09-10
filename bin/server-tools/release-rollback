@@ -14,6 +14,7 @@ for _a in "$@"; do
     if [ "$_a" = "--json" ]; then JSON_MODE=true; else _args+=("$_a"); fi
 done
 set -- "${_args[@]+"${_args[@]}"}"
+parse_opts "$@"
 
 SITE_NAME="${1:-}"
 SITES_ROOT="/var/www"
@@ -41,25 +42,28 @@ if [ ${#releases[@]} -eq 0 ]; then
     exit 1
 fi
 
-echo "Available releases for $SITE_NAME:"
-i=1
-for r in "${releases[@]}"; do
-    human="$(date -d "@$r" '+%Y-%m-%d %H:%M:%S')"
-    marker=""
-    if [ "$r" = "$CURRENT_TS" ]; then
-        marker=" (currently live)"
+selected="$(get_opt release)"
+if [ -z "$selected" ]; then
+    echo "Available releases for $SITE_NAME:"
+    i=1
+    for r in "${releases[@]}"; do
+        human="$(date -d "@$r" '+%Y-%m-%d %H:%M:%S')"
+        marker=""
+        if [ "$r" = "$CURRENT_TS" ]; then
+            marker=" (currently live)"
+        fi
+        echo "  $i) $r  ($human)$marker"
+        i=$((i + 1))
+    done
+
+    read -r -p "Select a release to activate [1-${#releases[@]}]: " choice
+    if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#releases[@]}" ]; then
+        echo "Invalid selection" >&2
+        exit 1
     fi
-    echo "  $i) $r  ($human)$marker"
-    i=$((i + 1))
-done
 
-read -r -p "Select a release to activate [1-${#releases[@]}]: " choice
-if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#releases[@]}" ]; then
-    echo "Invalid selection" >&2
-    exit 1
+    selected="${releases[$((choice - 1))]}"
 fi
-
-selected="${releases[$((choice - 1))]}"
 
 if [ "$selected" = "$CURRENT_TS" ]; then
     echo "That release is already live — nothing to do."
@@ -74,10 +78,12 @@ fi
 echo ""
 echo "This will make release $selected live for $SITE_NAME, replacing the"
 echo "currently active release $CURRENT_TS."
-read -r -p "Type the site name ($SITE_NAME) to confirm: " confirm
-if [ "$confirm" != "$SITE_NAME" ]; then
-    echo "Aborted — confirmation did not match."
-    exit 1
+if [ -z "$(get_opt yes)" ]; then
+    read -r -p "Type the site name ($SITE_NAME) to confirm: " confirm
+    if [ "$confirm" != "$SITE_NAME" ]; then
+        echo "Aborted — confirmation did not match."
+        exit 1
+    fi
 fi
 
 if $JSON_MODE; then

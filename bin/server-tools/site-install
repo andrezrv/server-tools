@@ -9,6 +9,7 @@ for _a in "$@"; do
     if [ "$_a" = "--json" ]; then JSON_MODE=true; else _args+=("$_a"); fi
 done
 set -- "${_args[@]+"${_args[@]}"}"
+parse_opts "$@"
 
 DOMAIN="${1:-}"
 if [ -z "$DOMAIN" ]; then
@@ -83,24 +84,37 @@ fi
 echo ""
 echo "WordPress install for $DOMAIN"
 echo ""
-read -r -p "Admin username: " ADMIN_USER
+ADMIN_USER="$(get_opt admin_user)"
+if [ -z "$ADMIN_USER" ]; then
+    read -r -p "Admin username: " ADMIN_USER
+fi
 if [ -z "$ADMIN_USER" ]; then
     echo "ERROR: admin username cannot be empty" >&2
     exit 1
 fi
-read -r -s -p "Admin password: " ADMIN_PASS
-echo ""
+ADMIN_PASS="$(get_opt admin_pass)"
+if [ -z "$ADMIN_PASS" ]; then
+    read -r -s -p "Admin password: " ADMIN_PASS
+    echo ""
+    if [ -z "$ADMIN_PASS" ]; then
+        echo "ERROR: admin password cannot be empty" >&2
+        exit 1
+    fi
+    read -r -s -p "Confirm password: " ADMIN_PASS_CONFIRM
+    echo ""
+    if [ "$ADMIN_PASS" != "$ADMIN_PASS_CONFIRM" ]; then
+        echo "ERROR: passwords do not match" >&2
+        exit 1
+    fi
+fi
 if [ -z "$ADMIN_PASS" ]; then
     echo "ERROR: admin password cannot be empty" >&2
     exit 1
 fi
-read -r -s -p "Confirm password: " ADMIN_PASS_CONFIRM
-echo ""
-if [ "$ADMIN_PASS" != "$ADMIN_PASS_CONFIRM" ]; then
-    echo "ERROR: passwords do not match" >&2
-    exit 1
+ADMIN_EMAIL="$(get_opt admin_email)"
+if [ -z "$ADMIN_EMAIL" ]; then
+    read -r -p "Admin email: " ADMIN_EMAIL
 fi
-read -r -p "Admin email: " ADMIN_EMAIL
 if [ -z "$ADMIN_EMAIL" ]; then
     echo "ERROR: admin email cannot be empty" >&2
     exit 1
@@ -114,18 +128,18 @@ sudo -u "$SITE_USER" wp --path="$STAGING/public" --url="$SITE_URL" core install 
     --admin_email="$ADMIN_EMAIL" \
     --skip-email
 
-THEME_SLUG=""
+THEME_SLUG="$(get_opt theme)"
 INSTALLED_THEMES="$(sudo -u "$SITE_USER" wp --path="$STAGING/public" theme list --field=name 2>/dev/null || true)"
-if [ -n "$INSTALLED_THEMES" ]; then
+if [ -n "$INSTALLED_THEMES" ] && [ -z "$THEME_SLUG" ]; then
     echo ""
     echo "Installed themes:"
     printf '%s\n' "$INSTALLED_THEMES"
     echo ""
     read -r -p "Theme to activate (leave blank to skip): " THEME_SLUG
-    if [ -n "$THEME_SLUG" ]; then
-        sudo -u "$SITE_USER" wp --path="$STAGING/public" theme activate "$THEME_SLUG"
-        log "Activated theme: $THEME_SLUG"
-    fi
+fi
+if [ -n "$THEME_SLUG" ]; then
+    sudo -u "$SITE_USER" wp --path="$STAGING/public" theme activate "$THEME_SLUG"
+    log "Activated theme: $THEME_SLUG"
 fi
 
 rm -f "$STAGING/.env.production"

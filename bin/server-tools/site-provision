@@ -8,8 +8,12 @@ cd /
 for _a in "$@"; do
     if [ "$_a" = "--json" ]; then JSON_MODE=true; fi
 done
+parse_opts "$@"
 
-read -r -p "Domain (e.g. newsite.com): " DOMAIN
+DOMAIN="$(get_opt domain)"
+if [ -z "$DOMAIN" ]; then
+    read -r -p "Domain (e.g. newsite.com): " DOMAIN
+fi
 if [ -z "$DOMAIN" ]; then
     echo "ERROR: domain cannot be empty" >&2
     exit 1
@@ -26,7 +30,10 @@ if [ -e "$SITE_DIR" ]; then
 fi
 
 SUGGESTED_SLUG="${DOMAIN%%.*}"
-read -r -p "Site slug for DB/FPM pool naming [$SUGGESTED_SLUG]: " SLUG
+SLUG="$(get_opt slug)"
+if [ -z "$SLUG" ]; then
+    read -r -p "Site slug for DB/FPM pool naming [$SUGGESTED_SLUG]: " SLUG
+fi
 SLUG="${SLUG:-$SUGGESTED_SLUG}"
 if [[ ! "$SLUG" =~ ^[a-z0-9-]+$ ]]; then
     echo "ERROR: slug must contain only lowercase letters, digits, and hyphens" >&2
@@ -34,7 +41,10 @@ if [[ ! "$SLUG" =~ ^[a-z0-9-]+$ ]]; then
 fi
 
 SUGGESTED_SITE_USER="${SLUG}-site"
-read -r -p "System user to own this site (existing or new) [$SUGGESTED_SITE_USER]: " SITE_USER
+SITE_USER="$(get_opt site_user)"
+if [ -z "$SITE_USER" ]; then
+    read -r -p "System user to own this site (existing or new) [$SUGGESTED_SITE_USER]: " SITE_USER
+fi
 SITE_USER="${SITE_USER:-$SUGGESTED_SITE_USER}"
 if [[ ! "$SITE_USER" =~ ^[a-z0-9_-]+$ ]]; then
     echo "ERROR: system user must contain only lowercase letters, digits, underscores, and hyphens" >&2
@@ -64,10 +74,12 @@ echo "  Site dir:   $SITE_DIR"
 echo "  System user: $SITE_USER"
 echo "  DB name/user: $DB_NAME"
 echo ""
-read -r -p "Proceed? [y/N] " confirm
-if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
-    echo "Aborted."
-    exit 1
+if [ -z "$(get_opt yes)" ]; then
+    read -r -p "Proceed? [y/N] " confirm
+    if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+        echo "Aborted."
+        exit 1
+    fi
 fi
 
 # --- 1. Database and scoped DB user ---
@@ -188,9 +200,15 @@ systemctl reload nginx
 log "Base site is up at http://$DOMAIN (placeholder page) — DNS must already point here for the next step."
 
 # --- 11. SSL certificate ---
-read -r -p "Run certbot now to obtain an SSL certificate? Requires DNS already pointing at this server. [y/N] " run_certbot
+run_certbot="$(get_opt certbot)"
+if [ -z "$run_certbot" ]; then
+    read -r -p "Run certbot now to obtain an SSL certificate? Requires DNS already pointing at this server. [y/N] " run_certbot
+fi
 if [ "$run_certbot" = "y" ] || [ "$run_certbot" = "Y" ]; then
-    read -r -p "Also include www.$DOMAIN in the certificate? [y/N] " include_www
+    include_www="$(get_opt certbot_www)"
+    if [ -z "$include_www" ]; then
+        read -r -p "Also include www.$DOMAIN in the certificate? [y/N] " include_www
+    fi
     if [ "$include_www" = "y" ] || [ "$include_www" = "Y" ]; then
         certbot --nginx -d "$DOMAIN" -d "www.$DOMAIN"
     else

@@ -31,6 +31,27 @@ wps backup --json > /tmp/backup-result.json
 
 Interactive commands (those that prompt for input) continue to show prompts on the terminal even in JSON mode — the JSON result is written to stdout at the end, so `wps site:provision --json > result.json` still works interactively while sending structured output to the file.
 
+**Non-interactive mode** — every prompt can be skipped by passing `--key=value` flags, which is useful for scripting and CI. Any flag that is omitted falls through to its interactive prompt as normal.
+
+| Command | Flag | Skips |
+|---|---|---|
+| `site:provision` | `--domain=example.com` | domain prompt |
+| `site:provision` | `--slug=mysite` | slug prompt (still defaults to domain prefix if omitted) |
+| `site:provision` | `--site-user=mysite-site` | system user prompt |
+| `site:provision` | `--yes=y` | "Proceed?" confirmation |
+| `site:provision` | `--certbot=y` or `--certbot=n` | certbot prompt |
+| `site:provision` | `--certbot-www=y` or `--certbot-www=n` | "include www?" prompt |
+| `site:install` | `--admin-user=admin` | admin username prompt |
+| `site:install` | `--admin-pass=secret` | password + confirm prompts |
+| `site:install` | `--admin-email=a@b.com` | admin email prompt |
+| `site:install` | `--theme=mytheme` | theme selection prompt |
+| `site:restore` | `--yes=y` | site-name confirmation |
+| `site:restore` | `--db-backup=1234567890.sql.gz` | DB backup selection menu |
+| `site:restore` | `--release-backup=1234567890-release-files.tar.gz` | release backup menu |
+| `site:restore` | `--shared-backup=1234567890-shared-files.tar.gz` | shared backup menu |
+| `release:rollback` | `--release=1234567890` | release selection menu |
+| `release:rollback` | `--yes=y` | site-name confirmation |
+
 - **wps site:list** — lists every site under `/var/www/` with its resolved document root and a `[OK]`/`[BROKEN]`/`[NO CURRENT]` status. JSON: `{"sites":[{"domain":"...","doc_root":"...","status":"ok|broken|no_current"}]}`.
 - **wps backup** — daily cron backup (DB + files) across every site under /var/www with a valid `current` symlink. Auto-discovers sites, no per-site configuration needed. Supports `--db-only`/`--files-only` and an optional site-name argument for one-off runs. JSON: `{"sites":[{"domain":"...","db":{"status":"ok|skipped|failed","file":"..."},"release_files":{...},"shared_files":{...}}],"events":[...]}`.
 - **wps site:info** — prints every path the provision process creates for a site, with `[OK]`, `[MISSING]`, or `[DISABLED]` status for each. Also shows the active release, system user, slug, and DB credentials read from `.env.production`. JSON: `{"domain":"...","site_user":"...","slug":"...","db_name":"...","db_user":"...","paths":{"site_root":{"path":"...","status":"ok|missing"},...}}`.

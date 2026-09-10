@@ -1,16 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Usage: wps release:rollback <site-name>
+# Usage: wps release:rollback <site-name> [--json]
 # Lists releases still on disk and lets you pick one to make live again
 # — a fast path for "this deploy is broken, go back" that doesn't need
 # a full backup restore, just re-pointing at a release still present.
+
+# shellcheck source=bin/server-tools/_lib.sh
+. "$(dirname "$0")/_lib.sh"
+
+_args=()
+for _a in "$@"; do
+    if [ "$_a" = "--json" ]; then JSON_MODE=true; else _args+=("$_a"); fi
+done
+set -- "${_args[@]+"${_args[@]}"}"
 
 SITE_NAME="${1:-}"
 SITES_ROOT="/var/www"
 
 if [ -z "$SITE_NAME" ]; then
-    echo "Usage: wps release:rollback <site-name>" >&2
+    echo "Usage: wps release:rollback <site-name> [--json]" >&2
     exit 1
 fi
 
@@ -54,6 +63,11 @@ selected="${releases[$((choice - 1))]}"
 
 if [ "$selected" = "$CURRENT_TS" ]; then
     echo "That release is already live — nothing to do."
+    if $JSON_MODE; then
+        printf '{"site":%s,"release":%s,"status":"already_live","events":[]}\n' \
+            "$(json_str "$SITE_NAME")" \
+            "$(json_str "$selected")"
+    fi
     exit 0
 fi
 
@@ -66,4 +80,13 @@ if [ "$confirm" != "$SITE_NAME" ]; then
     exit 1
 fi
 
-wps release:activate "$SITE_NAME" "$selected"
+if $JSON_MODE; then
+    # Route activate's stdout to stderr so rollback's JSON owns stdout.
+    wps release:activate "$SITE_NAME" "$selected" >&2
+    printf '{"site":%s,"previous_release":%s,"activated_release":%s,"status":"rolled_back","events":[]}\n' \
+        "$(json_str "$SITE_NAME")" \
+        "$(json_str "$CURRENT_TS")" \
+        "$(json_str "$selected")"
+else
+    wps release:activate "$SITE_NAME" "$selected"
+fi

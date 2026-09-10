@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# shellcheck source=bin/server-tools/_lib.sh
+. "$(dirname "$0")/_lib.sh"
+
 SITES_ROOT="/var/www"
 BACKUP_ROOT="/var/backups"
 RETENTION_DAYS=7
@@ -19,9 +22,12 @@ for arg in "$@"; do
         --files-only)
             BACKUP_DB=false
             ;;
+        --json)
+            JSON_MODE=true
+            ;;
         -*)
             echo "Unknown flag: $arg" >&2
-            echo "Usage: wps backup [--db-only|--files-only] [site-name]" >&2
+            echo "Usage: wps backup [--db-only|--files-only] [--json] [site-name]" >&2
             exit 1
             ;;
         *)
@@ -30,9 +36,8 @@ for arg in "$@"; do
     esac
 done
 
-log() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1"
-}
+# Per-site JSON result accumulator
+_SITE_RESULTS=()
 
 # Extracts KEY=value from a .env-style file without sourcing it
 get_env_value() {
@@ -45,8 +50,14 @@ backup_database() {
     local site_dir="$1" site_name="$2" site_user="$3" backup_dir="$4"
     local env_file="$site_dir/.env.production"
 
+    # Caller reads these after the function returns
+    _db_status="skipped"
+    _db_file=""
+    _db_reason=""
+
     if [ ! -f "$env_file" ]; then
         log "SKIP $site_name db — no .env.production found at site root"
+        _db_reason="no .env.production found at site root"
         return
     fi
 
@@ -58,6 +69,7 @@ backup_database() {
 
     if [ -z "$db_name" ] || [ -z "$db_user" ]; then
         log "SKIP $site_name db — .env.production missing required DB_* values"
+        _db_reason=".env.production missing required DB_* values"
         return
     fi
 
@@ -96,16 +108,17 @@ EOF
     if $success; then
         chown "$site_user":"$site_user" "$backup_file"
         log "OK $site_name db -> $backup_file"
+        _db_status="ok"
+        _db_file="$backup_file"
     else
         log "FAILED $site_name db — exhausted $MAX_RETRIES attempts, no partial file left behind"
+        _db_status="failed"
+        _db_reason="exhausted $MAX_RETRIES attempts"
     fi
 
     find "$backup_dir" -maxdepth 1 -name "*-${site_name}.sql.gz" -mtime +"$RETENTION_DAYS" -delete
 }
 
-# Runs a tar with retry + exit-code handling shared by both file backup
-# types below. Args: description, output file, tar's own arguments (from
-# "-C dir item..." onward).
 run_tar_backup() {
     local description="$1" backup_file="$2"
     shift 2
@@ -118,8 +131,6 @@ run_tar_backup() {
         tar_exit=0
         tar -czf "$backup_file" "$@" || tar_exit=$?
 
-        # GNU tar: 0 = clean success, 1 = success but a file changed while
-        # being read (harmless), 2+ = real failure
         if [ "$tar_exit" -le 1 ]; then
             success=true
             break
@@ -150,21 +161,26 @@ run_tar_backup() {
 backup_files() {
     local site_dir="$1" site_name="$2" site_user="$3" backup_dir="$4"
 
+    # Caller reads these after the function returns
+    _release_status="skipped"
+    _release_file=""
+    _release_reason=""
+    _shared_status="skipped"
+    _shared_file=""
+    _shared_reason=""
+
     local current_target
     current_target="$(readlink -f "$site_dir/current" 2>/dev/null || true)"
     if [ -z "$current_target" ] || [ ! -d "$current_target" ]; then
         log "SKIP $site_name files — current symlink missing or broken"
+        _release_reason="current symlink missing or broken"
+        _shared_reason="current symlink missing or broken"
         return
     fi
 
     local timestamp
     timestamp="$(date +%s)"
 
-    # --- Release content: everything in the currently-live release,
-    # except a stray "backup" dir if one exists, and only wp-config.php
-    # from public/ (WP core itself is regenerable via `wp core download`).
-    # .env.production lives at the site root, outside $current_target
-    # entirely, so it's never a candidate here regardless.
     local release_args=()
     local entry base
     while IFS= read -r entry; do
@@ -179,26 +195,38 @@ backup_files() {
 
     if [ ${#release_args[@]} -gt 0 ]; then
         local release_backup="$backup_dir/${timestamp}-${site_name}-release-files.tar.gz"
-        run_tar_backup "$site_name release files" "$release_backup" \
-            --exclude="content/cache" -C "$current_target" "${release_args[@]}"
-        if [ -f "$release_backup" ]; then
-            chown "$site_user":"$site_user" "$release_backup"
+        if run_tar_backup "$site_name release files" "$release_backup" \
+            --exclude="content/cache" -C "$current_target" "${release_args[@]}"; then
+            if [ -f "$release_backup" ]; then
+                chown "$site_user":"$site_user" "$release_backup"
+                _release_status="ok"
+                _release_file="$release_backup"
+            fi
+        else
+            _release_status="failed"
+            _release_reason="exhausted $MAX_RETRIES attempts"
         fi
     else
         log "SKIP $site_name release files — nothing to back up after applying exclusions"
+        _release_reason="nothing to back up after applying exclusions"
     fi
 
-    # --- shared/: uploads only at this point — genuinely irreplaceable,
-    # so no exclusions at all
     if [ -d "$site_dir/shared" ]; then
         local shared_backup="$backup_dir/${timestamp}-${site_name}-shared-files.tar.gz"
-        run_tar_backup "$site_name shared files" "$shared_backup" \
-            -C "$site_dir" shared
-        if [ -f "$shared_backup" ]; then
-            chown "$site_user":"$site_user" "$shared_backup"
+        if run_tar_backup "$site_name shared files" "$shared_backup" \
+            -C "$site_dir" shared; then
+            if [ -f "$shared_backup" ]; then
+                chown "$site_user":"$site_user" "$shared_backup"
+                _shared_status="ok"
+                _shared_file="$shared_backup"
+            fi
+        else
+            _shared_status="failed"
+            _shared_reason="exhausted $MAX_RETRIES attempts"
         fi
     else
         log "SKIP $site_name shared files — no shared/ directory found"
+        _shared_reason="no shared/ directory found"
     fi
 
     find "$backup_dir" -maxdepth 1 -name "*-${site_name}-release-files.tar.gz" -mtime +"$RETENTION_DAYS" -delete
@@ -212,6 +240,9 @@ backup_site() {
 
     if [ ! -L "$site_dir/current" ]; then
         log "SKIP $site_name — no current symlink found (not using the release structure?)"
+        if $JSON_MODE; then
+            _SITE_RESULTS+=("{\"domain\":$(json_str "$site_name"),\"skipped\":true,\"reason\":\"no current symlink found\"}")
+        fi
         return
     fi
 
@@ -221,6 +252,9 @@ backup_site() {
     site_user="$(stat -c '%U' "$current_target/public" 2>/dev/null || true)"
     if [ -z "$site_user" ]; then
         log "SKIP $site_name — could not determine site user via current/public"
+        if $JSON_MODE; then
+            _SITE_RESULTS+=("{\"domain\":$(json_str "$site_name"),\"skipped\":true,\"reason\":\"could not determine site user\"}")
+        fi
         return
     fi
 
@@ -231,12 +265,36 @@ backup_site() {
 
     log "Processing $site_name (os user: $site_user)"
 
+    _db_status="skipped"; _db_file=""; _db_reason=""
+    _release_status="skipped"; _release_file=""; _release_reason=""
+    _shared_status="skipped"; _shared_file=""; _shared_reason=""
+
     if $BACKUP_DB; then
         backup_database "$site_dir" "$site_name" "$site_user" "$backup_dir"
     fi
 
     if $BACKUP_FILES; then
         backup_files "$site_dir" "$site_name" "$site_user" "$backup_dir"
+    fi
+
+    if $JSON_MODE; then
+        local db_json rel_json sh_json
+        db_json="{\"status\":$(json_str "$_db_status")"
+        [ -n "$_db_file"   ] && db_json="$db_json,\"file\":$(json_str "$_db_file")"
+        [ -n "$_db_reason" ] && db_json="$db_json,\"reason\":$(json_str "$_db_reason")"
+        db_json="$db_json}"
+
+        rel_json="{\"status\":$(json_str "$_release_status")"
+        [ -n "$_release_file"   ] && rel_json="$rel_json,\"file\":$(json_str "$_release_file")"
+        [ -n "$_release_reason" ] && rel_json="$rel_json,\"reason\":$(json_str "$_release_reason")"
+        rel_json="$rel_json}"
+
+        sh_json="{\"status\":$(json_str "$_shared_status")"
+        [ -n "$_shared_file"   ] && sh_json="$sh_json,\"file\":$(json_str "$_shared_file")"
+        [ -n "$_shared_reason" ] && sh_json="$sh_json,\"reason\":$(json_str "$_shared_reason")"
+        sh_json="$sh_json}"
+
+        _SITE_RESULTS+=("{\"domain\":$(json_str "$site_name"),\"site_user\":$(json_str "$site_user"),\"db\":$db_json,\"release_files\":$rel_json,\"shared_files\":$sh_json}")
     fi
 }
 
@@ -254,3 +312,14 @@ else
 fi
 
 log "Backup run complete"
+
+if $JSON_MODE; then
+    printf '{"sites":['
+    first=true
+    for s in "${_SITE_RESULTS[@]+"${_SITE_RESULTS[@]}"}"; do
+        $first || printf ','
+        printf '%s' "$s"
+        first=false
+    done
+    printf '],"events":%s}\n' "$(json_events_array)"
+fi

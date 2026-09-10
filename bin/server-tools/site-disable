@@ -1,9 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# shellcheck source=bin/server-tools/_lib.sh
+. "$(dirname "$0")/_lib.sh"
+
+_args=()
+for _a in "$@"; do
+    if [ "$_a" = "--json" ]; then JSON_MODE=true; else _args+=("$_a"); fi
+done
+set -- "${_args[@]+"${_args[@]}"}"
+
 DOMAIN="${1:-}"
 if [ -z "$DOMAIN" ]; then
-    echo "Usage: wps site:disable <domain>" >&2
+    echo "Usage: wps site:disable <domain> [--json]" >&2
     exit 1
 fi
 
@@ -11,10 +20,6 @@ if [ ! -f "/etc/nginx/sites-available/$DOMAIN" ]; then
     echo "ERROR: /etc/nginx/sites-available/$DOMAIN not found" >&2
     exit 1
 fi
-
-log() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1"
-}
 
 SITE_DIR="/var/www/$DOMAIN"
 SITE_USER=""
@@ -30,14 +35,7 @@ systemctl reload nginx
 if [ -n "$SITE_USER" ]; then
     log "Removing this site's wp-cron entry from $SITE_USER's crontab..."
     mkdir -p "$SITE_DIR/.disabled-backup"
-
-    # Save just this site's own cron line (not the whole crontab, which
-    # may contain other sites' entries if SITE_USER is shared) so
-    # re-enabling later never clobbers anything unrelated added since.
     crontab -u "$SITE_USER" -l 2>/dev/null | grep "$SITE_DIR/current/public" > "$SITE_DIR/.disabled-backup/cron-line.bak" || true
-
-    # Remove only this site's line, never the whole crontab — SITE_USER
-    # may own other sites sharing the same crontab.
     REMAINING="$(crontab -u "$SITE_USER" -l 2>/dev/null | grep -v "$SITE_DIR/current/public" || true)"
     if [ -n "$REMAINING" ]; then
         echo "$REMAINING" | crontab -u "$SITE_USER" -
@@ -51,4 +49,18 @@ log "Nginx config preserved at /etc/nginx/sites-available/$DOMAIN"
 log "To re-enable: sudo ln -s /etc/nginx/sites-available/$DOMAIN /etc/nginx/sites-enabled/$DOMAIN && sudo nginx -t && sudo systemctl reload nginx"
 if [ -n "$SITE_USER" ]; then
     log "To restore cron: (sudo crontab -u $SITE_USER -l 2>/dev/null; cat $SITE_DIR/.disabled-backup/cron-line.bak) | sudo crontab -u $SITE_USER -"
+fi
+
+if $JSON_MODE; then
+    _reenable="sudo ln -s /etc/nginx/sites-available/$DOMAIN /etc/nginx/sites-enabled/$DOMAIN && sudo nginx -t && sudo systemctl reload nginx"
+    _restore_cron=""
+    if [ -n "$SITE_USER" ]; then
+        _restore_cron="(sudo crontab -u $SITE_USER -l 2>/dev/null; cat $SITE_DIR/.disabled-backup/cron-line.bak) | sudo crontab -u $SITE_USER -"
+    fi
+    printf '{"domain":%s,"status":"disabled","nginx_config":%s,"reenable_cmd":%s,"restore_cron_cmd":%s,"events":%s}\n' \
+        "$(json_str "$DOMAIN")" \
+        "$(json_str "/etc/nginx/sites-available/$DOMAIN")" \
+        "$(json_str "$_reenable")" \
+        "$(json_str "$_restore_cron")" \
+        "$(json_events_array)"
 fi

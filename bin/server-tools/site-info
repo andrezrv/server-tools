@@ -1,9 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# shellcheck source=bin/server-tools/_lib.sh
+. "$(dirname "$0")/_lib.sh"
+
+_args=()
+for _a in "$@"; do
+    if [ "$_a" = "--json" ]; then JSON_MODE=true; else _args+=("$_a"); fi
+done
+set -- "${_args[@]+"${_args[@]}"}"
+
 DOMAIN="${1:-}"
 if [ -z "$DOMAIN" ]; then
-    echo "Usage: wps site:info <domain>" >&2
+    echo "Usage: wps site:info <domain> [--json]" >&2
     exit 1
 fi
 
@@ -12,25 +21,6 @@ if [ ! -d "$SITE_DIR" ]; then
     echo "ERROR: $SITE_DIR does not exist" >&2
     exit 1
 fi
-
-GREEN="$(tput setaf 2 2>/dev/null || true)"
-RED="$(tput setaf 1 2>/dev/null || true)"
-YELLOW="$(tput setaf 3 2>/dev/null || true)"
-RESET="$(tput sgr0 2>/dev/null || true)"
-
-ok()       { printf "  %-22s %-55s ${GREEN}[OK]${RESET}" "$1" "$2"; }
-missing()  { printf "  %-22s %-55s ${RED}[MISSING]${RESET}" "$1" "$2"; }
-disabled() { printf "  %-22s %-55s ${YELLOW}[DISABLED]${RESET}" "$1" "$2"; }
-
-check() {
-    local label="$1" path="$2"
-    if [ -e "$path" ]; then
-        ok "$label" "$path"
-    else
-        missing "$label" "$path"
-    fi
-    echo ""
-}
 
 # --- Derive site user and slug from current release ---
 SITE_USER=""
@@ -52,7 +42,101 @@ if [ -f "$ENV_FILE" ]; then
     DB_USER="$(grep -E '^DB_USER=' "$ENV_FILE" | tail -n1 | cut -d '=' -f2-)"
 fi
 
-# --- Header ---
+if $JSON_MODE; then
+    # Build paths JSON object incrementally
+    _PATHS=""
+
+    _path_ok() {
+        local key="$1" path="$2" extra="${3:-}"
+        local entry
+        entry="{\"path\":$(json_str "$path"),\"status\":\"ok\""
+        [ -n "$extra" ] && entry="$entry,$extra"
+        entry="$entry}"
+        _PATHS="${_PATHS:+$_PATHS,}$(json_str "$key"):$entry"
+    }
+    _path_missing() {
+        local key="$1" path="$2"
+        _PATHS="${_PATHS:+$_PATHS,}$(json_str "$key"):{\"path\":$(json_str "$path"),\"status\":\"missing\"}"
+    }
+    _path_disabled() {
+        local key="$1" path="$2"
+        _PATHS="${_PATHS:+$_PATHS,}$(json_str "$key"):{\"path\":$(json_str "$path"),\"status\":\"disabled\"}"
+    }
+    _check() {
+        local key="$1" path="$2"
+        if [ -e "$path" ]; then _path_ok "$key" "$path"; else _path_missing "$key" "$path"; fi
+    }
+
+    _check "site_root" "$SITE_DIR"
+
+    if [ -L "$SITE_DIR/current" ] && [ -n "$CURRENT_TARGET" ]; then
+        _path_ok "current_release" "$SITE_DIR/current" "\"target\":$(json_str "$CURRENT_TARGET")"
+        _check "active_release" "$CURRENT_TARGET"
+    elif [ -L "$SITE_DIR/current" ]; then
+        _path_missing "current_release" "$SITE_DIR/current (symlink broken)"
+    else
+        _path_missing "current_release" "$SITE_DIR/current"
+    fi
+
+    _check "releases_dir"    "$SITE_DIR/releases"
+    _check "shared_dir"      "$SITE_DIR/shared"
+    _check "uploads"         "$SITE_DIR/shared/uploads"
+    _check "env_file"        "$SITE_DIR/.env.production"
+
+    if [ -f "/etc/nginx/sites-available/$DOMAIN" ]; then
+        _path_ok "nginx_config" "/etc/nginx/sites-available/$DOMAIN"
+        if [ -L "/etc/nginx/sites-enabled/$DOMAIN" ] || [ -f "/etc/nginx/sites-enabled/$DOMAIN" ]; then
+            _path_ok "nginx_enabled" "/etc/nginx/sites-enabled/$DOMAIN"
+        else
+            _path_disabled "nginx_enabled" "/etc/nginx/sites-enabled/$DOMAIN"
+        fi
+    else
+        _path_missing "nginx_config"  "/etc/nginx/sites-available/$DOMAIN"
+        _path_missing "nginx_enabled" "/etc/nginx/sites-enabled/$DOMAIN"
+    fi
+
+    if [ -n "$SLUG" ]; then
+        _check "fpm_pool"   "/etc/php/8.5/fpm/pool.d/$SLUG.conf"
+        _check "fpm_socket" "/run/php/php8.5-fpm-$SLUG.sock"
+    else
+        _path_missing "fpm_pool"   "/etc/php/8.5/fpm/pool.d/<slug>.conf"
+        _path_missing "fpm_socket" "/run/php/php8.5-fpm-<slug>.sock"
+    fi
+
+    _check "wpcron_log_dir" "/var/log/wp-cron/$DOMAIN"
+    _check "deploy_log"     "/var/log/deploy-$DOMAIN.log"
+    _check "backup_dir"     "/var/backups/$DOMAIN"
+    _check "ssl_cert"       "/etc/letsencrypt/live/$DOMAIN"
+
+    printf '{"domain":%s,"site_user":%s,"slug":%s,"db_name":%s,"db_user":%s,"paths":{%s}}\n' \
+        "$(json_str "$DOMAIN")" \
+        "$(json_str "${SITE_USER:-unknown}")" \
+        "$(json_str "${SLUG:-unknown}")" \
+        "$(json_str "${DB_NAME:-unknown}")" \
+        "$(json_str "${DB_USER:-unknown}")" \
+        "$_PATHS"
+    exit 0
+fi
+
+GREEN="$(tput setaf 2 2>/dev/null || true)"
+RED="$(tput setaf 1 2>/dev/null || true)"
+YELLOW="$(tput setaf 3 2>/dev/null || true)"
+RESET="$(tput sgr0 2>/dev/null || true)"
+
+ok()       { printf "  %-22s %-55s ${GREEN}[OK]${RESET}" "$1" "$2"; }
+missing()  { printf "  %-22s %-55s ${RED}[MISSING]${RESET}" "$1" "$2"; }
+disabled() { printf "  %-22s %-55s ${YELLOW}[DISABLED]${RESET}" "$1" "$2"; }
+
+check() {
+    local label="$1" path="$2"
+    if [ -e "$path" ]; then
+        ok "$label" "$path"
+    else
+        missing "$label" "$path"
+    fi
+    echo ""
+}
+
 echo ""
 echo "Site: $DOMAIN"
 echo "  System user:  ${SITE_USER:-unknown}"
@@ -60,10 +144,8 @@ echo "  Slug:         ${SLUG:-unknown}"
 echo "  DB name:      ${DB_NAME:-unknown}  /  DB user: ${DB_USER:-unknown}"
 echo ""
 
-# --- Paths ---
 check "Site root"         "$SITE_DIR"
 
-# Current symlink — show resolved target if it exists
 if [ -L "$SITE_DIR/current" ] && [ -n "$CURRENT_TARGET" ]; then
     ok "Current release" "$SITE_DIR/current"
     echo "  ->  $CURRENT_TARGET"
@@ -81,7 +163,6 @@ check "Shared dir"        "$SITE_DIR/shared"
 check "Uploads"           "$SITE_DIR/shared/uploads"
 check ".env.production"   "$SITE_DIR/.env.production"
 
-# Nginx — distinguish missing vs disabled (available but not enabled)
 if [ -f "/etc/nginx/sites-available/$DOMAIN" ]; then
     ok "Nginx config" "/etc/nginx/sites-available/$DOMAIN"
     echo ""

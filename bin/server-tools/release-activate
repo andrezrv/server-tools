@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Usage: wps release:activate <site-name> <release-timestamp>
+# Usage: wps release:activate <site-name> <release-timestamp> [--json]
 # Makes an already-built release (sitting in releases/<timestamp>) the
 # live one: swaps the current symlink, restarts/reloads services,
 # records the release timestamp, and clears plugin caches. Used by both
@@ -9,12 +9,21 @@ set -euo pipefail
 # (when re-pointing to an existing older one) — kept in one place so the
 # two never drift out of sync on what "going live" actually requires.
 
+# shellcheck source=bin/server-tools/_lib.sh
+. "$(dirname "$0")/_lib.sh"
+
+_args=()
+for _a in "$@"; do
+    if [ "$_a" = "--json" ]; then JSON_MODE=true; else _args+=("$_a"); fi
+done
+set -- "${_args[@]+"${_args[@]}"}"
+
 SITE_NAME="${1:-}"
 RELEASE_TS="${2:-}"
 SITES_ROOT="/var/www"
 
 if [ -z "$SITE_NAME" ] || [ -z "$RELEASE_TS" ]; then
-    echo "Usage: wps release:activate <site-name> <release-timestamp>" >&2
+    echo "Usage: wps release:activate <site-name> <release-timestamp> [--json]" >&2
     exit 1
 fi
 
@@ -29,10 +38,6 @@ if [ ! -f "$RELEASE_DIR/wp-config.php" ]; then
     echo "ERROR: $RELEASE_DIR is missing wp-config.php — refusing to activate a broken release" >&2
     exit 1
 fi
-
-log() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1"
-}
 
 SITE_USER="$(stat -c '%U' "$RELEASE_DIR/public")"
 
@@ -54,3 +59,10 @@ fi
 sudo -u "$SITE_USER" wp --path="$RELEASE_DIR/public" cache flush --quiet || true
 
 log "Activated release $RELEASE_TS for $SITE_NAME"
+
+if $JSON_MODE; then
+    printf '{"site":%s,"release":%s,"status":"activated","events":%s}\n' \
+        "$(json_str "$SITE_NAME")" \
+        "$(json_str "$RELEASE_TS")" \
+        "$(json_events_array)"
+fi

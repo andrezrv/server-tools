@@ -2,9 +2,12 @@
 set -euo pipefail
 cd /
 
-log() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1"
-}
+# shellcheck source=bin/server-tools/_lib.sh
+. "$(dirname "$0")/_lib.sh"
+
+for _a in "$@"; do
+    if [ "$_a" = "--json" ]; then JSON_MODE=true; fi
+done
 
 read -r -p "Domain (e.g. newsite.com): " DOMAIN
 if [ -z "$DOMAIN" ]; then
@@ -38,9 +41,6 @@ if [[ ! "$SITE_USER" =~ ^[a-z0-9_-]+$ ]]; then
     exit 1
 fi
 
-# Whoever is actually running this script (via sudo) — not hardcoded —
-# used later both for the deploy log file and for group membership so
-# this account can reach into the site's group-owned locations.
 DEPLOY_LOG_OWNER="${SUDO_USER:-$(whoami)}"
 
 DB_NAME="${SLUG}_wp"
@@ -111,16 +111,8 @@ chmod 600 "$SITE_DIR/.env.production"
 
 chown -R "$SITE_USER":"$SITE_USER" "$SITE_DIR"
 
-# Lets the login account (whoever runs deploys/db-sync from outside
-# this site's own isolation) traverse and write into this site's group-
-# owned locations — e.g. creating var/backups/<domain>/incoming/ for
-# db-sync push. Takes effect on that account's next fresh login, not
-# immediately within an already-open session.
 usermod -aG "$SITE_USER" "$DEPLOY_LOG_OWNER"
 
-# db-sync push's target directory — created proactively rather than
-# relying on its own lazy mkdir on first use, so it's already correctly
-# owned and permissioned from the start.
 mkdir -p "/var/backups/$DOMAIN/incoming"
 chown "$SITE_USER":"$SITE_USER" "/var/backups/$DOMAIN/incoming"
 chmod 770 "/var/backups/$DOMAIN/incoming"
@@ -160,25 +152,18 @@ POOL
 php-fpm8.5 -t
 systemctl reload php8.5-fpm
 
-# --- 6. Per-site temp directory — used by open_basedir and as the wp-cron
-# lock file location. /var/tmp persists across reboots (unlike /tmp) and
-# the 750 mode keeps it inaccessible to other local users. ---
+# --- 6. Per-site temp directory ---
 log "Setting up per-site temp directory..."
 mkdir -p "/var/tmp/$SLUG"
 chown "$SITE_USER":"$SITE_USER" "/var/tmp/$SLUG"
 chmod 750 "/var/tmp/$SLUG"
 
-# --- 7. wp-cron log directory (own subdirectory per site, avoiding any
-# cross-site ownership conflict on a shared parent) ---
+# --- 7. wp-cron log directory ---
 log "Setting up wp-cron log directory..."
 mkdir -p "/var/log/wp-cron/$DOMAIN"
 chown "$SITE_USER":"$SITE_USER" "/var/log/wp-cron/$DOMAIN"
 
-# --- 8. Deploy log file — written by `tee` in the GitHub Actions
-# workflow's "Finish deploy" step, which runs as whoever's SSH login
-# account is used for deploys, not as this site's own isolated system
-# user. Must exist and be owned by that account beforehand, since it
-# has no write access to /var/log/ by default.
+# --- 8. Deploy log file ---
 log "Setting up deploy log file (owner: $DEPLOY_LOG_OWNER)..."
 touch "/var/log/deploy-$DOMAIN.log"
 chown "$DEPLOY_LOG_OWNER":"$DEPLOY_LOG_OWNER" "/var/log/deploy-$DOMAIN.log"
@@ -187,16 +172,13 @@ chown "$DEPLOY_LOG_OWNER":"$DEPLOY_LOG_OWNER" "/var/log/deploy-$DOMAIN.log"
 log "Adding wp-cron crontab entry..."
 (crontab -u "$SITE_USER" -l 2>/dev/null || true; echo "*/5 * * * * flock -n /var/tmp/$SLUG/wp-cron.lock php -d error_reporting=\"E_ALL & ~E_DEPRECATED\" /usr/local/bin/wp cron event run --due-now --path=$SITE_DIR/current/public --quiet >> /var/log/wp-cron/$DOMAIN/cron.log 2>&1") | crontab -u "$SITE_USER" -
 
-# --- 10. Nginx config from the boilerplate template ---
+# --- 10. Nginx config ---
 log "Creating Nginx config..."
 TEMPLATE="/etc/nginx/templates/wordpress-site.conf.template"
 if [ ! -f "$TEMPLATE" ]; then
     echo "ERROR: $TEMPLATE not found — cannot generate Nginx config" >&2
     exit 1
 fi
-# Most-specific pattern first — the plain SITENAME substitution would
-# otherwise also consume the SITENAME inside php8.5-fpm-SITENAME before
-# the second substitution ever got a chance to match it.
 sed "s#php8.5-fpm-SITENAME#php8.5-fpm-$SLUG#g; s/SITENAME/$DOMAIN/g" \
     "$TEMPLATE" > "/etc/nginx/sites-available/$DOMAIN"
 ln -s "/etc/nginx/sites-available/$DOMAIN" "/etc/nginx/sites-enabled/$DOMAIN"
@@ -205,7 +187,7 @@ systemctl reload nginx
 
 log "Base site is up at http://$DOMAIN (placeholder page) — DNS must already point here for the next step."
 
-# --- 10. SSL certificate ---
+# --- 11. SSL certificate ---
 read -r -p "Run certbot now to obtain an SSL certificate? Requires DNS already pointing at this server. [y/N] " run_certbot
 if [ "$run_certbot" = "y" ] || [ "$run_certbot" = "Y" ]; then
     read -r -p "Also include www.$DOMAIN in the certificate? [y/N] " include_www
@@ -218,10 +200,22 @@ else
     log "Skipping certbot — run manually later: certbot --nginx -d $DOMAIN [-d www.$DOMAIN]"
 fi
 
-echo ""
-echo "=================================================="
-echo "Provisioning complete for $DOMAIN"
-echo "  DB name/user: $DB_NAME"
-echo "  DB password:  $DB_PASSWORD"
-echo "  (also saved in $SITE_DIR/.env.production)"
-echo "=================================================="
+if $JSON_MODE; then
+    printf '{"domain":%s,"slug":%s,"site_dir":%s,"site_user":%s,"db_name":%s,"db_user":%s,"db_password":%s,"status":"provisioned","events":%s}\n' \
+        "$(json_str "$DOMAIN")" \
+        "$(json_str "$SLUG")" \
+        "$(json_str "$SITE_DIR")" \
+        "$(json_str "$SITE_USER")" \
+        "$(json_str "$DB_NAME")" \
+        "$(json_str "$DB_USER")" \
+        "$(json_str "$DB_PASSWORD")" \
+        "$(json_events_array)"
+else
+    echo ""
+    echo "=================================================="
+    echo "Provisioning complete for $DOMAIN"
+    echo "  DB name/user: $DB_NAME"
+    echo "  DB password:  $DB_PASSWORD"
+    echo "  (also saved in $SITE_DIR/.env.production)"
+    echo "=================================================="
+fi

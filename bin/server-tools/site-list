@@ -1,16 +1,52 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# shellcheck source=bin/server-tools/_lib.sh
+. "$(dirname "$0")/_lib.sh"
+
 SITES_ROOT="/var/www"
 
-GREEN="$(tput setaf 2 2>/dev/null || true)"
-RED="$(tput setaf 1 2>/dev/null || true)"
-RESET="$(tput sgr0 2>/dev/null || true)"
+for arg in "$@"; do
+    case "$arg" in
+        --json) JSON_MODE=true ;;
+        *) echo "Unknown argument: $arg" >&2; echo "Usage: wps site:list [--json]" >&2; exit 1 ;;
+    esac
+done
 
 if [ ! -d "$SITES_ROOT" ]; then
     echo "ERROR: $SITES_ROOT does not exist" >&2
     exit 1
 fi
+
+if $JSON_MODE; then
+    _sites=()
+    for site_dir in "$SITES_ROOT"/*/; do
+        [ -d "$site_dir" ] || continue
+        domain="$(basename "$site_dir")"
+        doc_root="$site_dir/current/public"
+        if [ -L "$site_dir/current" ] && [ -d "$doc_root" ]; then
+            resolved="$(readlink -f "$doc_root" 2>/dev/null || true)"
+            _sites+=("{\"domain\":$(json_str "$domain"),\"doc_root\":$(json_str "${resolved:-$doc_root}"),\"status\":\"ok\"}")
+        elif [ -L "$site_dir/current" ]; then
+            _sites+=("{\"domain\":$(json_str "$domain"),\"doc_root\":$(json_str "$doc_root"),\"status\":\"broken\"}")
+        else
+            _sites+=("{\"domain\":$(json_str "$domain"),\"doc_root\":$(json_str "${site_dir%/}"),\"status\":\"no_current\"}")
+        fi
+    done
+    printf '{"sites":['
+    first=true
+    for s in "${_sites[@]+"${_sites[@]}"}"; do
+        $first || printf ','
+        printf '%s' "$s"
+        first=false
+    done
+    printf ']}\n'
+    exit 0
+fi
+
+GREEN="$(tput setaf 2 2>/dev/null || true)"
+RED="$(tput setaf 1 2>/dev/null || true)"
+RESET="$(tput sgr0 2>/dev/null || true)"
 
 found=0
 for site_dir in "$SITES_ROOT"/*/; do

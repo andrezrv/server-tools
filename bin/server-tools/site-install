@@ -78,8 +78,7 @@ sudo -u "$SITE_USER" composer --working-dir="$STAGING" update --no-interaction -
 
 if [ ! -f "$STAGING/public/wp-load.php" ] || \
    [ ! -d "$STAGING/public/wp-includes" ] || \
-   [ ! -d "$STAGING/public/wp-admin" ] || \
-   [ ! -d "$STAGING/public/wp-content" ]; then
+   [ ! -d "$STAGING/public/wp-admin" ]; then
     log "WordPress core not found in public/ after composer — downloading directly..."
     sudo -u "$SITE_USER" wp core download --path="$STAGING/public" --force
 fi

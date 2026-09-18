@@ -76,7 +76,10 @@ chown -R "$SITE_USER":"$SITE_USER" "$TMP_DIR"
 log "Installing dependencies..."
 sudo -u "$SITE_USER" composer --working-dir="$STAGING" update --no-interaction --no-dev
 
-if [ ! -f "$STAGING/public/wp-load.php" ]; then
+if [ ! -f "$STAGING/public/wp-load.php" ] || \
+   [ ! -d "$STAGING/public/wp-includes" ] || \
+   [ ! -d "$STAGING/public/wp-admin" ] || \
+   [ ! -d "$STAGING/public/wp-content" ]; then
     log "WordPress core not found in public/ after composer — downloading directly..."
     sudo -u "$SITE_USER" wp core download --path="$STAGING/public" --force
 fi

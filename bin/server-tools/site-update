@@ -61,8 +61,8 @@ sudo -u "$SITE_USER" composer --working-dir="$STAGING" update --no-interaction -
 if [ ! -f "$STAGING/public/wp-load.php" ] || \
    [ ! -d "$STAGING/public/wp-includes" ] || \
    [ ! -d "$STAGING/public/wp-admin" ]; then
-    echo "ERROR: WordPress core is missing or incomplete in public/ after composer — aborting deploy." >&2
-    exit 1
+    log "WordPress core incomplete in public/ after composer — downloading directly..."
+    sudo -u "$SITE_USER" wp core download --path="$STAGING/public" --force
 fi
 
 _UPDATE_STATUS="ok"

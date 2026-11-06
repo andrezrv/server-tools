@@ -265,6 +265,11 @@ else
     sed "s#php8.5-fpm-SITENAME#php8.5-fpm-$SLUG#g; s/SITENAME/$DOMAIN/g" \
         "$TEMPLATE" > "/etc/nginx/sites-available/$DOMAIN"
 fi
+# Subdomains (2+ dots) should not have a www variant in server_name
+_dot_count="${DOMAIN//[^.]/}"
+if [ "${#_dot_count}" -ge 2 ]; then
+    sed -i "s/ www\.$DOMAIN//" "/etc/nginx/sites-available/$DOMAIN"
+fi
 ln -s "/etc/nginx/sites-available/$DOMAIN" "/etc/nginx/sites-enabled/$DOMAIN"
 nginx -t
 systemctl reload nginx
@@ -277,14 +282,20 @@ if [ -z "$run_certbot" ]; then
     read -r -p "Run certbot now to obtain an SSL certificate? Requires DNS already pointing at this server. [y/N] " run_certbot
 fi
 if [ "$run_certbot" = "y" ] || [ "$run_certbot" = "Y" ]; then
-    include_www="$(get_opt certbot_www)"
-    if [ -z "$include_www" ]; then
-        read -r -p "Also include www.$DOMAIN in the certificate? [y/N] " include_www
-    fi
-    if [ "$include_www" = "y" ] || [ "$include_www" = "Y" ]; then
-        certbot --nginx -d "$DOMAIN" -d "www.$DOMAIN"
-    else
+    # Count dots — a subdomain (2+ dots) should not get a www variant
+    _dot_count="${DOMAIN//[^.]/}"
+    if [ "${#_dot_count}" -ge 2 ]; then
         certbot --nginx -d "$DOMAIN"
+    else
+        include_www="$(get_opt certbot_www)"
+        if [ -z "$include_www" ]; then
+            read -r -p "Also include www.$DOMAIN in the certificate? [y/N] " include_www
+        fi
+        if [ "$include_www" = "y" ] || [ "$include_www" = "Y" ]; then
+            certbot --nginx -d "$DOMAIN" -d "www.$DOMAIN"
+        else
+            certbot --nginx -d "$DOMAIN"
+        fi
     fi
 else
     log "Skipping certbot — run manually later: certbot --nginx -d $DOMAIN [-d www.$DOMAIN]"

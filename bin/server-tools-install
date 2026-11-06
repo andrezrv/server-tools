@@ -30,11 +30,14 @@ trap - EXIT
 # Standalone scripts (not wps subcommands)
 install -m 700 -o root -g root "$STAGING_PATH/bin/update-cloudflare-ips" /usr/local/bin/update-cloudflare-ips
 
-# Nginx template
+# Nginx templates
 mkdir -p /etc/nginx/templates
 install -m 644 -o root -g root \
     "$STAGING_PATH/nginx/wordpress-site.conf.template" \
     /etc/nginx/templates/wordpress-site.conf.template
+install -m 644 -o root -g root \
+    "$STAGING_PATH/nginx/static-site.conf.template" \
+    /etc/nginx/templates/static-site.conf.template
 
 # Sudoers files — substitute DEPLOY_USER, validate, install
 trap 'rm -f /tmp/sudoers-backups /tmp/sudoers-deploy /tmp/sudoers-server-tools-install' EXIT

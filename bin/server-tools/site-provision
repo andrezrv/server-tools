@@ -10,6 +10,11 @@ for _a in "$@"; do
 done
 parse_opts "$@"
 
+STATIC_SITE=false
+if [ -n "$(get_opt static)" ]; then
+    STATIC_SITE=true
+fi
+
 DOMAIN="$(get_opt domain)"
 if [ -z "$DOMAIN" ]; then
     read -r -p "Domain (e.g. newsite.com): " DOMAIN
@@ -32,7 +37,7 @@ fi
 SUGGESTED_SLUG="${DOMAIN%%.*}"
 SLUG="$(get_opt slug)"
 if [ -z "$SLUG" ]; then
-    read -r -p "Site slug for DB/FPM pool naming [$SUGGESTED_SLUG]: " SLUG
+    read -r -p "Site slug for naming [$SUGGESTED_SLUG]: " SLUG
 fi
 SLUG="${SLUG:-$SUGGESTED_SLUG}"
 if [[ ! "$SLUG" =~ ^[a-z0-9-]+$ ]]; then
@@ -53,26 +58,45 @@ fi
 
 DEPLOY_LOG_OWNER="${SUDO_USER:-$(whoami)}"
 
-DB_NAME="${SLUG}_wp"
-DB_USER="${SLUG}_wp"
-DB_PASSWORD="$(openssl rand -hex 5)"
+ERROR_PAGE_404="$(get_opt error_page_404)"
+if [ -n "$ERROR_PAGE_404" ] && ! $STATIC_SITE; then
+    echo "ERROR: --error-page-404 requires --static" >&2
+    exit 1
+fi
+if [ -n "$ERROR_PAGE_404" ] && [[ "$ERROR_PAGE_404" != /* ]]; then
+    echo "ERROR: --error-page-404 must be an absolute path (e.g. /404.html)" >&2
+    exit 1
+fi
 
-if [ -f "/etc/php/8.5/fpm/pool.d/$SLUG.conf" ]; then
-    echo "ERROR: an FPM pool already exists for slug '$SLUG' — pick a different slug to avoid overwriting an unrelated site" >&2
-    exit 1
+if ! $STATIC_SITE; then
+    DB_NAME="${SLUG}_wp"
+    DB_USER="${SLUG}_wp"
+    DB_PASSWORD="$(openssl rand -hex 5)"
+
+    if [ -f "/etc/php/8.5/fpm/pool.d/$SLUG.conf" ]; then
+        echo "ERROR: an FPM pool already exists for slug '$SLUG' — pick a different slug to avoid overwriting an unrelated site" >&2
+        exit 1
+    fi
+    if mariadb -u root -e "USE \`$DB_NAME\`" 2>/dev/null; then
+        echo "ERROR: database '$DB_NAME' already exists — pick a different slug to avoid reusing an unrelated site's database" >&2
+        exit 1
+    fi
 fi
-if mariadb -u root -e "USE \`$DB_NAME\`" 2>/dev/null; then
-    echo "ERROR: database '$DB_NAME' already exists — pick a different slug to avoid reusing an unrelated site's database" >&2
-    exit 1
-fi
+
+SITE_TYPE="WordPress"
+$STATIC_SITE && SITE_TYPE="static"
 
 echo ""
-echo "About to provision:"
-echo "  Domain:     $DOMAIN"
-echo "  Slug:       $SLUG"
-echo "  Site dir:   $SITE_DIR"
+echo "About to provision ($SITE_TYPE):"
+echo "  Domain:      $DOMAIN"
+echo "  Slug:        $SLUG"
+echo "  Site dir:    $SITE_DIR"
 echo "  System user: $SITE_USER"
-echo "  DB name/user: $DB_NAME"
+if $STATIC_SITE; then
+    [ -n "$ERROR_PAGE_404" ] && echo "  404 page:    $ERROR_PAGE_404"
+else
+    echo "  DB name/user: $DB_NAME"
+fi
 echo ""
 if [ -z "$(get_opt yes)" ]; then
     read -r -p "Proceed? [y/N] " confirm
@@ -82,18 +106,20 @@ if [ -z "$(get_opt yes)" ]; then
     fi
 fi
 
-# --- 1. Database and scoped DB user ---
-log "Creating database and DB user..."
-mariadb -u root <<SQL
+# --- 1. Database and scoped DB user (WordPress only) ---
+if ! $STATIC_SITE; then
+    log "Creating database and DB user..."
+    mariadb -u root <<SQL
 CREATE DATABASE IF NOT EXISTS \`$DB_NAME\`;
 CREATE USER IF NOT EXISTS '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PASSWORD';
 GRANT ALL PRIVILEGES ON \`$DB_NAME\`.* TO '$DB_USER'@'localhost';
 FLUSH PRIVILEGES;
 SQL
+fi
 
 # --- 2. System user ---
 if id "$SITE_USER" &>/dev/null; then
-    log "System user $SITE_USER already exists — reusing it. This site's own DB, FPM pool, and Nginx config are still separate and isolated regardless."
+    log "System user $SITE_USER already exists — reusing it. This site's own config and directories are still separate and isolated regardless."
 else
     log "Creating system user $SITE_USER..."
     useradd --system --no-create-home --shell /usr/sbin/nologin --user-group "$SITE_USER"
@@ -101,25 +127,49 @@ fi
 
 # --- 3. Directory skeleton + placeholder release ---
 log "Building directory skeleton..."
-mkdir -p "$SITE_DIR/releases" "$SITE_DIR/shared/uploads" "$SITE_DIR/bin"
+mkdir -p "$SITE_DIR/releases" "$SITE_DIR/shared" "$SITE_DIR/bin"
+if ! $STATIC_SITE; then
+    mkdir -p "$SITE_DIR/shared/uploads"
+fi
 TS="$(date +%s)"
 NEW_RELEASE="$SITE_DIR/releases/$TS"
 mkdir -p "$NEW_RELEASE/public"
-cat > "$NEW_RELEASE/public/index.php" <<'PHP'
+if $STATIC_SITE; then
+    cat > "$NEW_RELEASE/public/index.html" <<'HTML'
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Coming soon</title></head>
+<body><p>Placeholder &mdash; deploy pending.</p></body>
+</html>
+HTML
+else
+    cat > "$NEW_RELEASE/public/index.php" <<'PHP'
 <?php
 echo "Placeholder — deploy pending.";
 PHP
+fi
 ln -s "$NEW_RELEASE" "$SITE_DIR/current"
 
-# --- 4. .env.production ---
-log "Writing .env.production..."
-cat > "$SITE_DIR/.env.production" <<ENV
+# --- 4. .env.production (WordPress only) ---
+if ! $STATIC_SITE; then
+    log "Writing .env.production..."
+    cat > "$SITE_DIR/.env.production" <<ENV
 DB_NAME=$DB_NAME
 DB_USER=$DB_USER
 DB_PASSWORD=$DB_PASSWORD
 DB_HOST=localhost
 ENV
-chmod 600 "$SITE_DIR/.env.production"
+    chmod 600 "$SITE_DIR/.env.production"
+fi
+
+# --- 4s. Static marker file ---
+if $STATIC_SITE; then
+    log "Marking site as static..."
+    touch "$SITE_DIR/.static"
+    if [ -n "$ERROR_PAGE_404" ]; then
+        printf '%s\n' "$ERROR_PAGE_404" > "$SITE_DIR/.error-page-404"
+    fi
+fi
 
 chown -R "$SITE_USER":"$SITE_USER" "$SITE_DIR"
 
@@ -129,9 +179,10 @@ mkdir -p "/var/backups/$DOMAIN/incoming"
 chown "$SITE_USER":"$SITE_USER" "/var/backups/$DOMAIN/incoming"
 chmod 770 "/var/backups/$DOMAIN/incoming"
 
-# --- 5. Dedicated PHP-FPM pool ---
-log "Creating PHP-FPM pool..."
-cat > "/etc/php/8.5/fpm/pool.d/$SLUG.conf" <<POOL
+# --- 5. Dedicated PHP-FPM pool (WordPress only) ---
+if ! $STATIC_SITE; then
+    log "Creating PHP-FPM pool..."
+    cat > "/etc/php/8.5/fpm/pool.d/$SLUG.conf" <<POOL
 [$SLUG]
 user  = $SITE_USER
 group = $SITE_USER
@@ -161,38 +212,59 @@ php_admin_flag[log_errors]     = on
 php_admin_flag[display_errors] = off
 POOL
 
-php-fpm8.5 -t
-systemctl reload php8.5-fpm
+    php-fpm8.5 -t
+    systemctl reload php8.5-fpm
+fi
 
-# --- 6. Per-site temp directory ---
-log "Setting up per-site temp directory..."
-mkdir -p "/var/tmp/$SLUG"
-chown "$SITE_USER":"$SITE_USER" "/var/tmp/$SLUG"
-chmod 750 "/var/tmp/$SLUG"
+# --- 6. Per-site temp directory (WordPress only) ---
+if ! $STATIC_SITE; then
+    log "Setting up per-site temp directory..."
+    mkdir -p "/var/tmp/$SLUG"
+    chown "$SITE_USER":"$SITE_USER" "/var/tmp/$SLUG"
+    chmod 750 "/var/tmp/$SLUG"
+fi
 
-# --- 7. wp-cron log directory ---
-log "Setting up wp-cron log directory..."
-mkdir -p "/var/log/wp-cron/$DOMAIN"
-chown "$SITE_USER":"$SITE_USER" "/var/log/wp-cron/$DOMAIN"
+# --- 7. wp-cron log directory (WordPress only) ---
+if ! $STATIC_SITE; then
+    log "Setting up wp-cron log directory..."
+    mkdir -p "/var/log/wp-cron/$DOMAIN"
+    chown "$SITE_USER":"$SITE_USER" "/var/log/wp-cron/$DOMAIN"
+fi
 
 # --- 8. Deploy log file ---
 log "Setting up deploy log file (owner: $DEPLOY_LOG_OWNER)..."
 touch "/var/log/deploy-$DOMAIN.log"
 chown "$DEPLOY_LOG_OWNER":"$DEPLOY_LOG_OWNER" "/var/log/deploy-$DOMAIN.log"
 
-# --- 9. Cron entry ---
-log "Adding wp-cron crontab entry..."
-(crontab -u "$SITE_USER" -l 2>/dev/null || true; echo "*/5 * * * * flock -n /var/tmp/$SLUG/wp-cron.lock php -d error_reporting=\"E_ALL & ~E_DEPRECATED\" /usr/local/bin/wp cron event run --due-now --path=$SITE_DIR/current/public --quiet >> /var/log/wp-cron/$DOMAIN/cron.log 2>&1") | crontab -u "$SITE_USER" -
+# --- 9. Cron entry (WordPress only) ---
+if ! $STATIC_SITE; then
+    log "Adding wp-cron crontab entry..."
+    (crontab -u "$SITE_USER" -l 2>/dev/null || true; echo "*/5 * * * * flock -n /var/tmp/$SLUG/wp-cron.lock php -d error_reporting=\"E_ALL & ~E_DEPRECATED\" /usr/local/bin/wp cron event run --due-now --path=$SITE_DIR/current/public --quiet >> /var/log/wp-cron/$DOMAIN/cron.log 2>&1") | crontab -u "$SITE_USER" -
+fi
 
 # --- 10. Nginx config ---
 log "Creating Nginx config..."
-TEMPLATE="/etc/nginx/templates/wordpress-site.conf.template"
+if $STATIC_SITE; then
+    TEMPLATE="/etc/nginx/templates/static-site.conf.template"
+else
+    TEMPLATE="/etc/nginx/templates/wordpress-site.conf.template"
+fi
 if [ ! -f "$TEMPLATE" ]; then
     echo "ERROR: $TEMPLATE not found — cannot generate Nginx config" >&2
     exit 1
 fi
-sed "s#php8.5-fpm-SITENAME#php8.5-fpm-$SLUG#g; s/SITENAME/$DOMAIN/g" \
-    "$TEMPLATE" > "/etc/nginx/sites-available/$DOMAIN"
+if $STATIC_SITE; then
+    sed "s/SITENAME/$DOMAIN/g" "$TEMPLATE" > "/etc/nginx/sites-available/$DOMAIN"
+    if [ -n "$ERROR_PAGE_404" ]; then
+        sed -i "s|# CUSTOM_ERROR_PAGES|error_page 404 $ERROR_PAGE_404;|" \
+            "/etc/nginx/sites-available/$DOMAIN"
+    else
+        sed -i '/# CUSTOM_ERROR_PAGES/d' "/etc/nginx/sites-available/$DOMAIN"
+    fi
+else
+    sed "s#php8.5-fpm-SITENAME#php8.5-fpm-$SLUG#g; s/SITENAME/$DOMAIN/g" \
+        "$TEMPLATE" > "/etc/nginx/sites-available/$DOMAIN"
+fi
 ln -s "/etc/nginx/sites-available/$DOMAIN" "/etc/nginx/sites-enabled/$DOMAIN"
 nginx -t
 systemctl reload nginx
@@ -219,21 +291,35 @@ else
 fi
 
 if $JSON_MODE; then
-    printf '{"domain":%s,"slug":%s,"site_dir":%s,"site_user":%s,"db_name":%s,"db_user":%s,"db_password":%s,"status":"provisioned","events":%s}\n' \
-        "$(json_str "$DOMAIN")" \
-        "$(json_str "$SLUG")" \
-        "$(json_str "$SITE_DIR")" \
-        "$(json_str "$SITE_USER")" \
-        "$(json_str "$DB_NAME")" \
-        "$(json_str "$DB_USER")" \
-        "$(json_str "$DB_PASSWORD")" \
-        "$(json_events_array)"
+    if $STATIC_SITE; then
+        printf '{"domain":%s,"slug":%s,"site_dir":%s,"site_user":%s,"site_type":"static","error_page_404":%s,"status":"provisioned","events":%s}\n' \
+            "$(json_str "$DOMAIN")" \
+            "$(json_str "$SLUG")" \
+            "$(json_str "$SITE_DIR")" \
+            "$(json_str "$SITE_USER")" \
+            "$(json_str "$ERROR_PAGE_404")" \
+            "$(json_events_array)"
+    else
+        printf '{"domain":%s,"slug":%s,"site_dir":%s,"site_user":%s,"site_type":"wordpress","db_name":%s,"db_user":%s,"db_password":%s,"status":"provisioned","events":%s}\n' \
+            "$(json_str "$DOMAIN")" \
+            "$(json_str "$SLUG")" \
+            "$(json_str "$SITE_DIR")" \
+            "$(json_str "$SITE_USER")" \
+            "$(json_str "$DB_NAME")" \
+            "$(json_str "$DB_USER")" \
+            "$(json_str "$DB_PASSWORD")" \
+            "$(json_events_array)"
+    fi
 else
     echo ""
     echo "=================================================="
-    echo "Provisioning complete for $DOMAIN"
-    echo "  DB name/user: $DB_NAME"
-    echo "  DB password:  $DB_PASSWORD"
-    echo "  (also saved in $SITE_DIR/.env.production)"
+    echo "Provisioning complete for $DOMAIN ($SITE_TYPE)"
+    if $STATIC_SITE; then
+        [ -n "$ERROR_PAGE_404" ] && echo "  404 page: $ERROR_PAGE_404"
+    else
+        echo "  DB name/user: $DB_NAME"
+        echo "  DB password:  $DB_PASSWORD"
+        echo "  (also saved in $SITE_DIR/.env.production)"
+    fi
     echo "=================================================="
 fi

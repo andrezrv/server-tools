@@ -53,6 +53,11 @@ if [ -z "$CURRENT_TARGET" ] || [ ! -d "$CURRENT_TARGET/public" ]; then
 fi
 SITE_USER="$(stat -c '%U' "$CURRENT_TARGET/public")"
 
+STATIC_SITE=false
+if is_static_site "$SITE_DIR"; then
+    STATIC_SITE=true
+fi
+
 select_backup() {
     local pattern="$1" label="$2"
     local files=()
@@ -193,11 +198,14 @@ if $RESTORE_FILES; then
 
         chown -R "$SITE_USER":"$SITE_USER" "$NEW_RELEASE"
 
-        if [ ! -f "$NEW_RELEASE/public/wp-config.php" ]; then
+        _swap_ok=true
+        if ! $STATIC_SITE && [ ! -f "$NEW_RELEASE/public/wp-config.php" ]; then
             log "ERROR: restored release is missing public/wp-config.php — NOT swapping current."
             log "The broken release is left at $NEW_RELEASE for inspection; live site is untouched."
             _RELEASE_STATUS="error"
-        else
+            _swap_ok=false
+        fi
+        if $_swap_ok; then
             ln -sfn "$NEW_RELEASE" "$SITE_DIR/current"
             log "Swapped current -> $NEW_RELEASE"
             _RELEASE_STATUS="ok"

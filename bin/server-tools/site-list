@@ -24,13 +24,15 @@ if $JSON_MODE; then
         [ -d "$site_dir" ] || continue
         domain="$(basename "$site_dir")"
         doc_root="$site_dir/current/public"
+        _type="wordpress"
+        if is_static_site "$site_dir"; then _type="static"; fi
         if [ -L "$site_dir/current" ] && [ -d "$doc_root" ]; then
             resolved="$(readlink -f "$doc_root" 2>/dev/null || true)"
-            _sites+=("{\"domain\":$(json_str "$domain"),\"doc_root\":$(json_str "${resolved:-$doc_root}"),\"status\":\"ok\"}")
+            _sites+=("{\"domain\":$(json_str "$domain"),\"site_type\":$(json_str "$_type"),\"doc_root\":$(json_str "${resolved:-$doc_root}"),\"status\":\"ok\"}")
         elif [ -L "$site_dir/current" ]; then
-            _sites+=("{\"domain\":$(json_str "$domain"),\"doc_root\":$(json_str "$doc_root"),\"status\":\"broken\"}")
+            _sites+=("{\"domain\":$(json_str "$domain"),\"site_type\":$(json_str "$_type"),\"doc_root\":$(json_str "$doc_root"),\"status\":\"broken\"}")
         else
-            _sites+=("{\"domain\":$(json_str "$domain"),\"doc_root\":$(json_str "${site_dir%/}"),\"status\":\"no_current\"}")
+            _sites+=("{\"domain\":$(json_str "$domain"),\"site_type\":$(json_str "$_type"),\"doc_root\":$(json_str "${site_dir%/}"),\"status\":\"no_current\"}")
         fi
     done
     printf '{"sites":['
@@ -54,13 +56,16 @@ for site_dir in "$SITES_ROOT"/*/; do
     domain="$(basename "$site_dir")"
     doc_root="$site_dir/current/public"
 
+    _type_label=""
+    if is_static_site "$site_dir"; then _type_label=" (static)"; fi
+
     if [ -L "$site_dir/current" ] && [ -d "$doc_root" ]; then
         resolved="$(readlink -f "$doc_root" 2>/dev/null || true)"
-        printf "%-40s %s${GREEN}[OK]${RESET}\n" "$domain" "${resolved:-$doc_root}  "
+        printf "%-40s %s${GREEN}[OK]${RESET}%s\n" "$domain" "${resolved:-$doc_root}  " "$_type_label"
     elif [ -L "$site_dir/current" ]; then
-        printf "%-40s %s${RED}[BROKEN]${RESET}\n" "$domain" "$doc_root  "
+        printf "%-40s %s${RED}[BROKEN]${RESET}%s\n" "$domain" "$doc_root  " "$_type_label"
     else
-        printf "%-40s %s${RED}[NO CURRENT]${RESET}\n" "$domain" "$site_dir  "
+        printf "%-40s %s${RED}[NO CURRENT]${RESET}%s\n" "$domain" "$site_dir  " "$_type_label"
     fi
     found=1
 done

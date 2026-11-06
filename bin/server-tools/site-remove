@@ -28,25 +28,36 @@ if [ -L "$SITE_DIR/current" ]; then
 fi
 SLUG="${SITE_USER%-site}"
 
+STATIC_SITE=false
+if is_static_site "$SITE_DIR"; then
+    STATIC_SITE=true
+fi
+
 DB_NAME=""
 DB_USER=""
-ENV_FILE="$SITE_DIR/.env.production"
-if [ -f "$ENV_FILE" ]; then
-    DB_NAME="$(grep -E '^DB_NAME=' "$ENV_FILE" | tail -n1 | cut -d '=' -f2-)"
-    DB_USER="$(grep -E '^DB_USER=' "$ENV_FILE" | tail -n1 | cut -d '=' -f2-)"
+if ! $STATIC_SITE; then
+    ENV_FILE="$SITE_DIR/.env.production"
+    if [ -f "$ENV_FILE" ]; then
+        DB_NAME="$(grep -E '^DB_NAME=' "$ENV_FILE" | tail -n1 | cut -d '=' -f2-)"
+        DB_USER="$(grep -E '^DB_USER=' "$ENV_FILE" | tail -n1 | cut -d '=' -f2-)"
+    fi
 fi
 
 echo ""
 echo "This will PERMANENTLY remove $DOMAIN, including:"
 echo "  - Nginx config"
-echo "  - PHP-FPM pool (slug: ${SLUG:-unknown})"
+if ! $STATIC_SITE; then
+    echo "  - PHP-FPM pool (slug: ${SLUG:-unknown})"
+fi
 echo "  - Crontab for ${SITE_USER:-unknown}"
 if [ -n "$SLUG" ] && [ -f "/etc/cron.d/wps-update-$SLUG" ]; then
     echo "  - Daily update cron: /etc/cron.d/wps-update-$SLUG"
 fi
 echo "  - SSL certificate"
 echo "  - The entire site directory: $SITE_DIR"
-echo "  - Database: ${DB_NAME:-unknown} and DB user: ${DB_USER:-unknown}"
+if ! $STATIC_SITE; then
+    echo "  - Database: ${DB_NAME:-unknown} and DB user: ${DB_USER:-unknown}"
+fi
 echo "  - System user: ${SITE_USER:-unknown} (unless it also owns another site — checked below)"
 echo ""
 echo "This cannot be undone."
@@ -84,8 +95,10 @@ if [ -n "$SLUG" ] && [ -f "/etc/cron.d/wps-update-$SLUG" ]; then
     rm -f "/etc/cron.d/wps-update-$SLUG"
 fi
 
-log "Removing wp-cron log directory..."
-rm -rf "/var/log/wp-cron/$DOMAIN"
+if ! $STATIC_SITE; then
+    log "Removing wp-cron log directory..."
+    rm -rf "/var/log/wp-cron/$DOMAIN"
+fi
 
 log "Removing SSL certificate (if one exists)..."
 certbot delete --cert-name "$DOMAIN" --non-interactive 2>/dev/null || log "No certificate found, or removal failed — check manually if needed"
@@ -96,15 +109,17 @@ rm -rf "/var/backups/$DOMAIN"
 log "Removing site directory $SITE_DIR..."
 rm -rf "${SITE_DIR:?}"
 
-if [ -n "$DB_NAME" ] && [ -n "$DB_USER" ]; then
-    log "Dropping database and DB user..."
-    mariadb -u root <<SQL || log "WARNING: database drop failed — remove $DB_NAME and $DB_USER manually"
+if ! $STATIC_SITE; then
+    if [ -n "$DB_NAME" ] && [ -n "$DB_USER" ]; then
+        log "Dropping database and DB user..."
+        mariadb -u root <<SQL || log "WARNING: database drop failed — remove $DB_NAME and $DB_USER manually"
 DROP DATABASE IF EXISTS \`$DB_NAME\`;
 DROP USER IF EXISTS '$DB_USER'@'localhost';
 FLUSH PRIVILEGES;
 SQL
-else
-    log "WARNING: could not determine DB name/user — database was NOT dropped. Remove manually if needed."
+    else
+        log "WARNING: could not determine DB name/user — database was NOT dropped. Remove manually if needed."
+    fi
 fi
 
 if [ -n "$SITE_USER" ]; then

@@ -34,36 +34,51 @@ if [ ! -d "$RELEASE_DIR" ]; then
     echo "ERROR: $RELEASE_DIR does not exist" >&2
     exit 1
 fi
-if [ ! -f "$RELEASE_DIR/wp-config.php" ]; then
-    echo "ERROR: $RELEASE_DIR is missing wp-config.php — refusing to activate a broken release" >&2
-    exit 1
+
+STATIC_SITE=false
+if is_static_site "$SITE_DIR"; then
+    STATIC_SITE=true
+fi
+
+if ! $STATIC_SITE; then
+    if [ ! -f "$RELEASE_DIR/wp-config.php" ]; then
+        echo "ERROR: $RELEASE_DIR is missing wp-config.php — refusing to activate a broken release" >&2
+        exit 1
+    fi
 fi
 
 SITE_USER="$(stat -c '%U' "$RELEASE_DIR/public")"
 
-if [ ! -f "$RELEASE_DIR/public/wp-load.php" ] || \
-   [ ! -d "$RELEASE_DIR/public/wp-includes" ] || \
-   [ ! -d "$RELEASE_DIR/public/wp-admin" ]; then
-    log "WordPress core missing from release — downloading directly..."
-    sudo -u "$SITE_USER" wp core download --path="$RELEASE_DIR/public" --force
+if ! $STATIC_SITE; then
+    if [ ! -f "$RELEASE_DIR/public/wp-load.php" ] || \
+       [ ! -d "$RELEASE_DIR/public/wp-includes" ] || \
+       [ ! -d "$RELEASE_DIR/public/wp-admin" ]; then
+        log "WordPress core missing from release — downloading directly..."
+        sudo -u "$SITE_USER" wp core download --path="$RELEASE_DIR/public" --force
+    fi
 fi
 
 ln -sfn "$RELEASE_DIR" "$SITE_DIR/current"
 chown -h "$SITE_USER":"$SITE_USER" "$SITE_DIR/current"
 log "Swapped current -> $RELEASE_DIR"
 
-log "Recording release timestamp..."
-sudo -u "$SITE_USER" wp --path="$RELEASE_DIR/public" option update av_latest_release_timestamp "$RELEASE_TS" --autoload=yes --quiet
+if $STATIC_SITE; then
+    log "Reloading nginx..."
+    systemctl reload nginx
+else
+    log "Recording release timestamp..."
+    sudo -u "$SITE_USER" wp --path="$RELEASE_DIR/public" option update av_latest_release_timestamp "$RELEASE_TS" --autoload=yes --quiet
 
-log "Restarting php8.5-fpm and reloading nginx..."
-systemctl restart php8.5-fpm
-systemctl reload nginx
+    log "Restarting php8.5-fpm and reloading nginx..."
+    systemctl restart php8.5-fpm
+    systemctl reload nginx
 
-if [ -e "$RELEASE_DIR/content/plugins/cache-enabler" ] || [ -e "$RELEASE_DIR/content/plugins/autoptimize" ]; then
-    log "Clearing Cache Enabler / Autoptimize cache..."
-    rm -rf "${RELEASE_DIR:?}/content/cache"
+    if [ -e "$RELEASE_DIR/content/plugins/cache-enabler" ] || [ -e "$RELEASE_DIR/content/plugins/autoptimize" ]; then
+        log "Clearing Cache Enabler / Autoptimize cache..."
+        rm -rf "${RELEASE_DIR:?}/content/cache"
+    fi
+    sudo -u "$SITE_USER" wp --path="$RELEASE_DIR/public" cache flush --quiet || true
 fi
-sudo -u "$SITE_USER" wp --path="$RELEASE_DIR/public" cache flush --quiet || true
 
 log "Activated release $RELEASE_TS for $SITE_NAME"
 

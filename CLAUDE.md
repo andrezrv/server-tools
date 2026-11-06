@@ -12,7 +12,7 @@ bin/server-tools/          # Subcommands (not on PATH directly)
   site-info                # Print all paths for a site with [OK]/[MISSING]/[DISABLED] status
   site-install             # Install WP Boilerplate on a provisioned site; marks as unmanaged, sets daily update cron
   site-update              # Pull and deploy latest boilerplate; only runs on sites with the unmanaged marker; auto-rolls back on finish-deploy failure
-  site-provision           # Create a new site end-to-end
+  site-provision           # Create a new site end-to-end (WordPress or --static)
   site-restore             # Full restore from backup archive
   site-disable             # Take a site offline (reversible)
   site-remove              # Permanently delete everything site-provision created
@@ -20,6 +20,7 @@ bin/server-tools/          # Subcommands (not on PATH directly)
   release-rollback         # Interactive rollback to a previous on-disk release
 nginx/
   wordpress-site.conf.template   # Uses SITENAME placeholder; place at /etc/nginx/templates/
+  static-site.conf.template      # Static site variant; uses SITENAME + CUSTOM_ERROR_PAGES placeholders
 sudoers/
   backups                  # Grants DEPLOY_USER passwordless sudo for /usr/local/bin/wps
   deploy                   # Grants DEPLOY_USER passwordless sudo for /home/DEPLOY_USER/finish-deploy
@@ -49,7 +50,8 @@ Config files use bare uppercase tokens substituted via `sed` at deploy time. **N
 
 | Token | Replaced by | Where |
 |---|---|---|
-| `SITENAME` | Real domain | `nginx/wordpress-site.conf.template` — expanded by `wps site:provision` |
+| `SITENAME` | Real domain | `nginx/wordpress-site.conf.template`, `nginx/static-site.conf.template` — expanded by `wps site:provision` |
+| `CUSTOM_ERROR_PAGES` | `error_page 404 <path>;` or removed | `nginx/static-site.conf.template` — expanded by `wps site:provision --error-page-404=<path>` |
 | `DEPLOY_USER` | OS login username | `sudoers/backups`, `sudoers/deploy` — expanded by the "Install sudoers files" step in `deploy.yml` |
 
 ## Code style

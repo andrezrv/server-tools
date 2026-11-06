@@ -1,0 +1,36 @@
+server {
+    listen 80;
+    listen [::]:80;
+    server_name SITENAME www.SITENAME;
+
+    root /var/www/SITENAME/current/public;
+    index index.html;
+
+    access_log /var/log/nginx/SITENAME-access.log;
+    error_log  /var/log/nginx/SITENAME-error.log;
+
+    # CUSTOM_ERROR_PAGES
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+
+    # Deny all dotfiles (.htaccess, .git, .env, etc.)
+    location ~ /\. {
+        deny all;
+        access_log off;
+        log_not_found off;
+    }
+
+    # Static asset caching
+    location ~* \.(css|js|jpg|jpeg|png|gif|ico|svg|webp|woff|woff2|ttf|eot)$ {
+        expires 30d;
+        add_header Cache-Control "public, no-transform";
+        access_log off;
+    }
+
+    gzip on;
+    gzip_vary on;
+    gzip_types text/plain text/css application/javascript application/json image/svg+xml;
+    gzip_min_length 256;
+}

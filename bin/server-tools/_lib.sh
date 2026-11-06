@@ -51,6 +51,8 @@ parse_opts() {
             printf -v "_OPT_${_key}" '%s' "$_val"
         elif [[ "$_a" == --yes ]]; then
             printf -v "_OPT_YES" '%s' "y"
+        elif [[ "$_a" == --static ]]; then
+            printf -v "_OPT_STATIC" '%s' "y"
         fi
     done
 }
@@ -60,4 +62,10 @@ get_opt() {
     local _varname
     _varname="_OPT_$(printf '%s' "${1//-/_}" | tr '[:lower:]' '[:upper:]')"
     printf '%s' "${!_varname:-}"
+}
+
+# True if the given site directory belongs to a static (non-WordPress) site.
+is_static_site() {
+    local site_dir="${1:-}"
+    [ -f "$site_dir/.static" ]
 }

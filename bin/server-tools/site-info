@@ -33,13 +33,20 @@ if [ -L "$SITE_DIR/current" ]; then
     SLUG="${SITE_USER%-site}"
 fi
 
+STATIC_SITE=false
+if is_static_site "$SITE_DIR"; then
+    STATIC_SITE=true
+fi
+
 # --- Read DB credentials from .env.production without sourcing ---
 DB_NAME=""
 DB_USER=""
-ENV_FILE="$SITE_DIR/.env.production"
-if [ -f "$ENV_FILE" ]; then
-    DB_NAME="$(grep -E '^DB_NAME=' "$ENV_FILE" | tail -n1 | cut -d '=' -f2-)"
-    DB_USER="$(grep -E '^DB_USER=' "$ENV_FILE" | tail -n1 | cut -d '=' -f2-)"
+if ! $STATIC_SITE; then
+    ENV_FILE="$SITE_DIR/.env.production"
+    if [ -f "$ENV_FILE" ]; then
+        DB_NAME="$(grep -E '^DB_NAME=' "$ENV_FILE" | tail -n1 | cut -d '=' -f2-)"
+        DB_USER="$(grep -E '^DB_USER=' "$ENV_FILE" | tail -n1 | cut -d '=' -f2-)"
+    fi
 fi
 
 if $JSON_MODE; then
@@ -80,8 +87,10 @@ if $JSON_MODE; then
 
     _check "releases_dir"    "$SITE_DIR/releases"
     _check "shared_dir"      "$SITE_DIR/shared"
-    _check "uploads"         "$SITE_DIR/shared/uploads"
-    _check "env_file"        "$SITE_DIR/.env.production"
+    if ! $STATIC_SITE; then
+        _check "uploads"         "$SITE_DIR/shared/uploads"
+        _check "env_file"        "$SITE_DIR/.env.production"
+    fi
 
     if [ -f "/etc/nginx/sites-available/$DOMAIN" ]; then
         _path_ok "nginx_config" "/etc/nginx/sites-available/$DOMAIN"
@@ -95,21 +104,27 @@ if $JSON_MODE; then
         _path_missing "nginx_enabled" "/etc/nginx/sites-enabled/$DOMAIN"
     fi
 
-    if [ -n "$SLUG" ]; then
-        _check "fpm_pool"   "/etc/php/8.5/fpm/pool.d/$SLUG.conf"
-        _check "fpm_socket" "/run/php/php8.5-fpm-$SLUG.sock"
-    else
-        _path_missing "fpm_pool"   "/etc/php/8.5/fpm/pool.d/<slug>.conf"
-        _path_missing "fpm_socket" "/run/php/php8.5-fpm-<slug>.sock"
+    if ! $STATIC_SITE; then
+        if [ -n "$SLUG" ]; then
+            _check "fpm_pool"   "/etc/php/8.5/fpm/pool.d/$SLUG.conf"
+            _check "fpm_socket" "/run/php/php8.5-fpm-$SLUG.sock"
+        else
+            _path_missing "fpm_pool"   "/etc/php/8.5/fpm/pool.d/<slug>.conf"
+            _path_missing "fpm_socket" "/run/php/php8.5-fpm-<slug>.sock"
+        fi
+        _check "wpcron_log_dir" "/var/log/wp-cron/$DOMAIN"
     fi
 
-    _check "wpcron_log_dir" "/var/log/wp-cron/$DOMAIN"
     _check "deploy_log"     "/var/log/deploy-$DOMAIN.log"
     _check "backup_dir"     "/var/backups/$DOMAIN"
     _check "ssl_cert"       "/etc/letsencrypt/live/$DOMAIN"
 
-    printf '{"domain":%s,"site_user":%s,"slug":%s,"db_name":%s,"db_user":%s,"paths":{%s}}\n' \
+    _SITE_TYPE="wordpress"
+    $STATIC_SITE && _SITE_TYPE="static"
+
+    printf '{"domain":%s,"site_type":%s,"site_user":%s,"slug":%s,"db_name":%s,"db_user":%s,"paths":{%s}}\n' \
         "$(json_str "$DOMAIN")" \
+        "$(json_str "$_SITE_TYPE")" \
         "$(json_str "${SITE_USER:-unknown}")" \
         "$(json_str "${SLUG:-unknown}")" \
         "$(json_str "${DB_NAME:-unknown}")" \
@@ -139,9 +154,16 @@ check() {
 
 echo ""
 echo "Site: $DOMAIN"
+if $STATIC_SITE; then
+    echo "  Type:         static"
+else
+    echo "  Type:         WordPress"
+fi
 echo "  System user:  ${SITE_USER:-unknown}"
 echo "  Slug:         ${SLUG:-unknown}"
-echo "  DB name:      ${DB_NAME:-unknown}  /  DB user: ${DB_USER:-unknown}"
+if ! $STATIC_SITE; then
+    echo "  DB name:      ${DB_NAME:-unknown}  /  DB user: ${DB_USER:-unknown}"
+fi
 echo ""
 
 check "Site root"         "$SITE_DIR"
@@ -160,8 +182,10 @@ fi
 
 check "Releases dir"      "$SITE_DIR/releases"
 check "Shared dir"        "$SITE_DIR/shared"
-check "Uploads"           "$SITE_DIR/shared/uploads"
-check ".env.production"   "$SITE_DIR/.env.production"
+if ! $STATIC_SITE; then
+    check "Uploads"           "$SITE_DIR/shared/uploads"
+    check ".env.production"   "$SITE_DIR/.env.production"
+fi
 
 if [ -f "/etc/nginx/sites-available/$DOMAIN" ]; then
     ok "Nginx config" "/etc/nginx/sites-available/$DOMAIN"
@@ -179,17 +203,18 @@ else
     echo ""
 fi
 
-if [ -n "$SLUG" ]; then
-    check "FPM pool config"   "/etc/php/8.5/fpm/pool.d/$SLUG.conf"
-    check "FPM socket"        "/run/php/php8.5-fpm-$SLUG.sock"
-else
-    missing "FPM pool config" "/etc/php/8.5/fpm/pool.d/<slug>.conf  (slug unknown)"
-    echo ""
-    missing "FPM socket"      "/run/php/php8.5-fpm-<slug>.sock  (slug unknown)"
-    echo ""
+if ! $STATIC_SITE; then
+    if [ -n "$SLUG" ]; then
+        check "FPM pool config"   "/etc/php/8.5/fpm/pool.d/$SLUG.conf"
+        check "FPM socket"        "/run/php/php8.5-fpm-$SLUG.sock"
+    else
+        missing "FPM pool config" "/etc/php/8.5/fpm/pool.d/<slug>.conf  (slug unknown)"
+        echo ""
+        missing "FPM socket"      "/run/php/php8.5-fpm-<slug>.sock  (slug unknown)"
+        echo ""
+    fi
+    check "wp-cron log dir"   "/var/log/wp-cron/$DOMAIN"
 fi
-
-check "wp-cron log dir"   "/var/log/wp-cron/$DOMAIN"
 check "Deploy log"        "/var/log/deploy-$DOMAIN.log"
 check "Backup dir"        "/var/backups/$DOMAIN"
 check "SSL cert"          "/etc/letsencrypt/live/$DOMAIN"
